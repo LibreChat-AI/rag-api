@@ -223,6 +223,13 @@ AWS_SESSION_TOKEN = get_env_variable("AWS_SESSION_TOKEN", "")
 GOOGLE_APPLICATION_CREDENTIALS = get_env_variable("GOOGLE_APPLICATION_CREDENTIALS", "")
 env_value = get_env_variable("RAG_CHECK_EMBEDDING_CTX_LENGTH", "True").lower()
 RAG_CHECK_EMBEDDING_CTX_LENGTH = True if env_value == "true" else False
+EMBEDDINGS_ENCODING_FORMAT = get_env_variable("EMBEDDINGS_ENCODING_FORMAT", None)
+if EMBEDDINGS_ENCODING_FORMAT is not None:
+    EMBEDDINGS_ENCODING_FORMAT = EMBEDDINGS_ENCODING_FORMAT.lower()
+    if EMBEDDINGS_ENCODING_FORMAT not in ("float", "base64"):
+        raise ValueError(
+            "EMBEDDINGS_ENCODING_FORMAT must be either 'float' or 'base64'"
+        )
 
 # Only parse RAG_DISTANCE_THRESHOLD when it will actually be applied (pgvector).
 # Under atlas-mongo the setting is documented as ignored, so parsing it
@@ -251,6 +258,10 @@ def init_embeddings(provider, model, dimensions=None):
         )
         if dimensions is not None:
             kwargs["dimensions"] = dimensions
+        if EMBEDDINGS_ENCODING_FORMAT is not None:
+            kwargs["model_kwargs"] = {
+                "encoding_format": EMBEDDINGS_ENCODING_FORMAT
+            }
         return OpenAIEmbeddings(**kwargs)
     elif provider == EmbeddingsProvider.AZURE:
         from langchain_openai import AzureOpenAIEmbeddings
@@ -265,6 +276,10 @@ def init_embeddings(provider, model, dimensions=None):
         )
         if dimensions is not None:
             kwargs["dimensions"] = dimensions
+        if EMBEDDINGS_ENCODING_FORMAT is not None:
+            kwargs["model_kwargs"] = {
+                "encoding_format": EMBEDDINGS_ENCODING_FORMAT
+            }
         return AzureOpenAIEmbeddings(**kwargs)
     elif provider == EmbeddingsProvider.HUGGINGFACE:
         from langchain_huggingface import HuggingFaceEmbeddings

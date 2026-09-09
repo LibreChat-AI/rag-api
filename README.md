@@ -185,6 +185,9 @@ The following environment variables are required to run the application:
 - `EMBEDDING_BATCH_SIZE`: (Optional) Number of document chunks to process per batch. Defaults to `500`; set to `0` to disable batching. Recommended value is `750` for `text-embedding-3-small`.
 - `EMBEDDING_MAX_QUEUE_SIZE`: (Optional) Maximum number of batches to buffer in memory during async processing. Default value is "3".
 - `PARALLEL_EXECUTION`: (Optional) Maximum number of async embedding/database insertion consumers to run per file when batching is enabled. Default value is "2".
+- `RAG_INGESTION_WINDOW_SIZE`: (Optional) Maximum prepared chunks retained between parsing and insertion. Defaults to `100` and remains independent from the provider batch size.
+- `RAG_INGESTION_CONCURRENCY`: (Optional) Maximum complete file ingestions processed concurrently per API process. Defaults to `2`; additional uploads wait without starting parser or embedding work.
+- `RAG_THREAD_POOL_SIZE`: (Optional) Maximum worker threads shared by parsing and vector-store operations. Defaults to the detected CPU count, capped at `8`.
 - `RAG_DISTANCE_THRESHOLD`: (Optional, `VECTOR_DB_TYPE=pgvector` only) Drop results whose vector distance is greater than this value, after the top-`k` search. Unset by default (no filtering). Lower distance = more similar, so e.g. `0.5` keeps only hits with distance ≤ 0.5 and discards weaker matches. Useful for reducing downstream LLM token cost when the top-`k` call returns loosely-related chunks. Appropriate values depend on the embedding model and distance strategy — inspect your actual scores before choosing one. Ignored (with a startup warning) under `VECTOR_DB_TYPE=atlas-mongo`, because Atlas returns a similarity score (higher = better) with inverted semantics.
 - `RAG_UPLOAD_DIR`: (Optional) The directory where uploaded files are stored. Default value is "./uploads/".
 - `PDF_EXTRACT_IMAGES`: (Optional) A boolean value indicating whether to extract images from PDF files. Default value is "False".
@@ -256,9 +259,10 @@ For high-throughput environments:
 When `EMBEDDING_BATCH_SIZE > 0`:
 - Documents are processed in batches of the specified size
 - Up to `PARALLEL_EXECUTION` batches for the same file can be embedded and inserted concurrently
-- `PARALLEL_EXECUTION` is per request/file. Total process concurrency can be roughly `active uploads * PARALLEL_EXECUTION`, bounded indirectly by `RAG_THREAD_POOL_SIZE` and downstream provider/database limits
+- Source documents are parsed and split incrementally, with at most `RAG_INGESTION_WINDOW_SIZE` prepared chunks retained before insertion
+- Complete file ingestions are limited by `RAG_INGESTION_CONCURRENCY`; `PARALLEL_EXECUTION` still controls batch consumers within one active file
 - On failure, remaining batch work is stopped and successfully inserted documents are rolled back
-- Memory usage is bounded by queued plus active batches, roughly `EMBEDDING_BATCH_SIZE * (EMBEDDING_MAX_QUEUE_SIZE + PARALLEL_EXECUTION)`
+- Memory usage is bounded by the preparation window plus queued and active embedding batches
 - Ingestion lifecycle logs include route, user, file, chunk count, file size, elapsed time, and selected process memory context. Per-batch queue/insert progress is logged at debug level
 
 When `EMBEDDING_BATCH_SIZE <= 0`:

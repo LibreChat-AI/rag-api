@@ -8,6 +8,8 @@ Mark with @pytest.mark.integration to skip in normal test runs.
 Run with: pytest tests/test_batch_processing_integration.py -v -m integration
 """
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import tracemalloc
@@ -483,3 +485,116 @@ class TestStreamingIngestion:
             document.metadata["_rag_ingestion_attempt_id"]
             for document in inserted_documents
         } == {metadata_filter["_rag_ingestion_attempt_id"]}
+
+    def test_streaming_splitter_matches_recursive_splitter(self):
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        from app.routes.document_routes import _iter_recursive_text_chunks
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=40, chunk_overlap=8)
+        text = (
+            "First paragraph with several words.\n\n"
+            "Second paragraph is longer and crosses more than one chunk. " * 8
+        )
+
+        assert list(
+            _iter_recursive_text_chunks(splitter, text, splitter._separators)
+        ) == splitter.split_text(text)
+
+    @pytest.mark.asyncio
+    async def test_chunk_indexes_and_attempt_span_multiple_windows(self):
+        import app.routes.document_routes as routes
+
+        inserted_documents = []
+
+        async def add_documents(documents, ids=None, executor=None):
+            inserted_documents.extend(documents)
+            return ids
+
+        mock_store = AsyncMock()
+        mock_store.aadd_documents = add_documents
+        mock_store.delete_by_metadata = AsyncMock()
+
+        with (
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 10),
+            patch.object(routes, "PARALLEL_EXECUTION", 1),
+            patch.object(routes, "RAG_INGESTION_WINDOW_SIZE", 2),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+            patch.object(routes, "isinstance", return_value=True),
+        ):
+            result = await routes.store_data_in_vector_db(
+                [Document(page_content=f"page {index}") for index in range(5)],
+                "ordered-file",
+                "user",
+            )
+
+        assert len(result["ids"]) == 5
+        assert [
+            document.metadata["_rag_chunk_index"]
+            for document in inserted_documents
+        ] == list(range(5))
+        assert len(
+            {
+                document.metadata["_rag_ingestion_attempt_id"]
+                for document in inserted_documents
+            }
+        ) == 1
+
+    @pytest.mark.asyncio
+    async def test_cancellation_waits_for_parser_before_releasing_ingestion_slot(self):
+        import app.routes.document_routes as routes
+
+        parser_started = threading.Event()
+        release_parser = threading.Event()
+        second_insert_started = asyncio.Event()
+
+        def blocking_source():
+            parser_started.set()
+            release_parser.wait(timeout=2)
+            yield Document(page_content="first")
+
+        async def add_documents(documents, ids=None, executor=None):
+            if ids == ["second-file"]:
+                second_insert_started.set()
+            return ids
+
+        mock_store = AsyncMock()
+        mock_store.aadd_documents = add_documents
+        mock_store.delete_by_metadata = AsyncMock()
+
+        with (
+            ThreadPoolExecutor(max_workers=2) as executor,
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 1),
+            patch.object(routes, "PARALLEL_EXECUTION", 1),
+            patch.object(routes, "RAG_INGESTION_WINDOW_SIZE", 1),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+            patch.object(routes, "isinstance", return_value=True),
+        ):
+            first_task = asyncio.create_task(
+                routes.store_data_in_vector_db(
+                    blocking_source(), "first-file", "user", executor=executor
+                )
+            )
+            await asyncio.to_thread(parser_started.wait, 1)
+            first_task.cancel()
+
+            second_task = asyncio.create_task(
+                routes.store_data_in_vector_db(
+                    [Document(page_content="second")],
+                    "second-file",
+                    "user",
+                    executor=executor,
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not second_insert_started.is_set()
+
+            release_parser.set()
+            with pytest.raises(asyncio.CancelledError):
+                await first_task
+            second_result = await second_task
+
+        assert "error" not in second_result
+        assert second_insert_started.is_set()

@@ -1,7 +1,9 @@
 # app/routes/document_routes.py
 import os
+import re
 import sys
 import uuid
+from collections import deque
 from pathlib import Path
 import hashlib
 import traceback
@@ -1001,6 +1003,153 @@ def _prepare_documents_sync(
     ]
 
 
+class _StreamingChunkMerger:
+    """Incremental equivalent of TextSplitter._merge_splits()."""
+
+    def __init__(self, text_splitter, separator: str):
+        self.text_splitter = text_splitter
+        self.separator = separator
+        self.separator_length = text_splitter._length_function(separator)
+        self.parts = deque()
+        self.total = 0
+
+    def add(self, part: str) -> Iterator[str]:
+        part_length = self.text_splitter._length_function(part)
+        if (
+            self.total
+            + part_length
+            + (self.separator_length if self.parts else 0)
+            > self.text_splitter._chunk_size
+        ):
+            if self.total > self.text_splitter._chunk_size:
+                logger.warning(
+                    "Created a chunk of size %d, which is longer than the specified %d",
+                    self.total,
+                    self.text_splitter._chunk_size,
+                )
+            if self.parts:
+                document = self.text_splitter._join_docs(
+                    list(self.parts), self.separator
+                )
+                if document is not None:
+                    yield document
+                while self.total > self.text_splitter._chunk_overlap or (
+                    self.total
+                    + part_length
+                    + (self.separator_length if self.parts else 0)
+                    > self.text_splitter._chunk_size
+                    and self.total > 0
+                ):
+                    self.total -= self.text_splitter._length_function(
+                        self.parts[0]
+                    ) + (self.separator_length if len(self.parts) > 1 else 0)
+                    self.parts.popleft()
+
+        self.parts.append(part)
+        self.total += part_length + (
+            self.separator_length if len(self.parts) > 1 else 0
+        )
+
+    def finish(self) -> Iterator[str]:
+        if not self.parts:
+            return
+        document = self.text_splitter._join_docs(list(self.parts), self.separator)
+        if document is not None:
+            yield document
+        self.parts.clear()
+        self.total = 0
+
+
+def _iter_separator_splits(
+    text: str, separator_pattern: str, keep_separator
+) -> Iterator[str]:
+    """Yield regex splits without first building a list of every match."""
+    if not separator_pattern:
+        yield from text
+        return
+
+    matches = re.finditer(separator_pattern, text)
+    cursor = 0
+
+    if keep_separator == "end":
+        for match in matches:
+            part = text[cursor : match.end()]
+            if part:
+                yield part
+            cursor = match.end()
+    elif keep_separator:
+        first_match = True
+        for match in matches:
+            if first_match:
+                prefix = text[: match.start()]
+                if prefix:
+                    yield prefix
+                cursor = match.start()
+                first_match = False
+                continue
+            part = text[cursor : match.start()]
+            if part:
+                yield part
+            cursor = match.start()
+    else:
+        for match in matches:
+            part = text[cursor : match.start()]
+            if part:
+                yield part
+            cursor = match.end()
+
+    remainder = text[cursor:]
+    if remainder:
+        yield remainder
+
+
+def _iter_recursive_text_chunks(
+    text_splitter: RecursiveCharacterTextSplitter,
+    text: str,
+    separators: List[str],
+) -> Iterator[str]:
+    """Yield the same chunks as RecursiveCharacterTextSplitter, incrementally."""
+    separator = separators[-1]
+    next_separators: List[str] = []
+    for index, candidate in enumerate(separators):
+        pattern = (
+            candidate
+            if text_splitter._is_separator_regex
+            else re.escape(candidate)
+        )
+        if not candidate:
+            separator = candidate
+            break
+        if re.search(pattern, text):
+            separator = candidate
+            next_separators = separators[index + 1 :]
+            break
+
+    separator_pattern = (
+        separator if text_splitter._is_separator_regex else re.escape(separator)
+    )
+    join_separator = "" if text_splitter._keep_separator else separator
+    merger = _StreamingChunkMerger(text_splitter, join_separator)
+
+    for split in _iter_separator_splits(
+        text, separator_pattern, text_splitter._keep_separator
+    ):
+        if text_splitter._length_function(split) < text_splitter._chunk_size:
+            yield from merger.add(split)
+            continue
+
+        yield from merger.finish()
+        merger = _StreamingChunkMerger(text_splitter, join_separator)
+        if not next_separators:
+            yield split
+        else:
+            yield from _iter_recursive_text_chunks(
+                text_splitter, split, next_separators
+            )
+
+    yield from merger.finish()
+
+
 def _prepare_document_windows_sync(
     data: Iterable[Document],
     file_id: str,
@@ -1020,11 +1169,15 @@ def _prepare_document_windows_sync(
     window: List[Document] = []
 
     for source_document in data:
-        for document in text_splitter.split_documents([source_document]):
+        for split_content in _iter_recursive_text_chunks(
+            text_splitter,
+            source_document.page_content,
+            text_splitter._separators,
+        ):
             page_content = (
-                clean_text(document.page_content)
+                clean_text(split_content)
                 if clean_content
-                else document.page_content
+                else split_content
             )
             window.append(
                 Document(
@@ -1033,7 +1186,7 @@ def _prepare_document_windows_sync(
                         "file_id": file_id,
                         "user_id": user_id,
                         "digest": generate_digest(page_content),
-                        **(document.metadata or {}),
+                        **(source_document.metadata or {}),
                     },
                 )
             )
@@ -1051,6 +1204,23 @@ def _next_document_window(windows: Iterator[List[Document]]):
         return next(windows)
     except StopIteration:
         return _END_OF_DOCUMENT_STREAM
+
+
+async def _next_document_window_async(
+    windows: Iterator[List[Document]], loop, executor
+):
+    """Wait for parser work to stop before propagating request cancellation."""
+    parser_future = loop.run_in_executor(executor, _next_document_window, windows)
+    try:
+        return await asyncio.shield(parser_future)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(parser_future)
+        except Exception as parser_error:
+            logger.warning(
+                "Parser stopped after request cancellation | error=%s", parser_error
+            )
+        raise
 
 
 async def store_data_in_vector_db(
@@ -1102,6 +1272,7 @@ async def _store_data_in_vector_db(
     processed_chunks = 0
     ingestion_attempt_id = None
     ingestion_attempt_started_at_ns = None
+    windows = None
 
     try:
         if EMBEDDING_BATCH_SIZE <= 0:
@@ -1143,8 +1314,8 @@ async def _store_data_in_vector_db(
             ingestion_attempt_started_at_ns = time.time_ns()
 
             while True:
-                docs = await loop.run_in_executor(
-                    executor, _next_document_window, windows
+                docs = await _next_document_window_async(
+                    windows, loop, executor
                 )
                 if docs is _END_OF_DOCUMENT_STREAM:
                     break
@@ -1252,6 +1423,9 @@ async def _store_data_in_vector_db(
             traceback.format_exc(),
         )
         return {"message": "An error occurred while adding documents.", "error": str(e)}
+    finally:
+        if windows is not None:
+            windows.close()
 
 
 @router.post("/local/embed")
@@ -1291,7 +1465,6 @@ async def embed_local_file(
         loader, known_type, file_ext = get_loader(
             document.filename, document.file_content_type, file_path
         )
-        loop = asyncio.get_running_loop()
         data = loader.lazy_load()
 
         result = await store_data_in_vector_db(

@@ -913,6 +913,12 @@ async def _process_documents_batched_sync(
 
     loop = asyncio.get_running_loop()
 
+    async def rollback_file() -> None:
+        await loop.run_in_executor(
+            executor,
+            lambda: vector_store.delete_scoped(ids=[file_id], owners=[user_id]),
+        )
+
     for batch_idx in range(num_batches):
         start_idx = batch_idx * EMBEDDING_BATCH_SIZE
         end_idx = min(start_idx + EMBEDDING_BATCH_SIZE, total_chunks)
@@ -930,12 +936,34 @@ async def _process_documents_batched_sync(
 
         try:
             # Wrap sync call in executor to avoid blocking the event loop
-            batch_result_ids = await loop.run_in_executor(
+            batch_future = loop.run_in_executor(
                 executor,
                 lambda docs=batch_documents, ids=batch_ids: vector_store.add_documents(
                     docs, ids=ids
                 ),
             )
+            try:
+                batch_result_ids = await asyncio.shield(batch_future)
+            except asyncio.CancelledError:
+                try:
+                    completed_ids = await asyncio.shield(batch_future)
+                    all_ids.extend(completed_ids or [])
+                except Exception as batch_error:
+                    logger.warning(
+                        "Sync batch stopped after request cancellation | file_id=%s | error=%s",
+                        file_id,
+                        batch_error,
+                    )
+                if all_ids:
+                    try:
+                        await rollback_file()
+                    except Exception as rollback_error:
+                        logger.error(
+                            "Rollback failed for cancelled file %s: %s",
+                            file_id,
+                            rollback_error,
+                        )
+                raise
             all_ids.extend(batch_result_ids)
 
         except Exception as batch_error:
@@ -947,12 +975,7 @@ async def _process_documents_batched_sync(
             ):  # any batch succeeded (i.e., any chunks for this file were inserted)
                 logger.warning("Rolling back file %s due to batch failure", file_id)
                 try:
-                    await loop.run_in_executor(
-                        executor,
-                        lambda: vector_store.delete_scoped(
-                            ids=[file_id], owners=[user_id]
-                        ),
-                    )
+                    await rollback_file()
                     logger.info("Rollback completed for file %s", file_id)
                 except Exception as rollback_error:
                     logger.error(
@@ -1223,6 +1246,34 @@ async def _next_document_window_async(
         raise
 
 
+async def _rollback_completed_streaming_windows(
+    file_id: str,
+    user_id: str,
+    inserted_ids: List[str],
+    ingestion_attempt_id: Optional[str],
+    executor,
+) -> None:
+    """Remove windows committed before a later parser or insert failure."""
+    if not inserted_ids:
+        return
+
+    if isinstance(vector_store, AsyncPgVector):
+        await vector_store.delete_by_metadata(
+            {
+                "file_id": file_id,
+                _INGESTION_ATTEMPT_ID_KEY: ingestion_attempt_id,
+            },
+            executor=executor,
+        )
+        return
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        executor,
+        lambda: vector_store.delete_scoped(ids=[file_id], owners=[user_id]),
+    )
+
+
 async def store_data_in_vector_db(
     data: Iterable[Document],
     file_id: str,
@@ -1273,6 +1324,7 @@ async def _store_data_in_vector_db(
     ingestion_attempt_id = None
     ingestion_attempt_started_at_ns = None
     windows = None
+    ids = []
 
     try:
         if EMBEDDING_BATCH_SIZE <= 0:
@@ -1309,7 +1361,6 @@ async def _store_data_in_vector_db(
                     window_size,
                 )
             )
-            ids = []
             ingestion_attempt_id = uuid.uuid4().hex
             ingestion_attempt_started_at_ns = time.time_ns()
 
@@ -1372,40 +1423,38 @@ async def _store_data_in_vector_db(
         return {"message": "Documents added successfully", "ids": ids}
 
     except asyncio.CancelledError:
-        if (
-            isinstance(vector_store, AsyncPgVector)
-            and ingestion_attempt_id
-            and processed_chunks
-        ):
-            await vector_store.delete_by_metadata(
-                {
-                    "file_id": file_id,
-                    _INGESTION_ATTEMPT_ID_KEY: ingestion_attempt_id,
-                },
-                executor=executor,
+        try:
+            await _rollback_completed_streaming_windows(
+                file_id,
+                user_id,
+                ids,
+                ingestion_attempt_id,
+                executor,
+            )
+        except Exception as cleanup_error:
+            logger.error(
+                "Cancelled ingestion rollback failed | user_id=%s | file_id=%s | error=%s",
+                user_id,
+                file_id,
+                cleanup_error,
             )
         raise
     except Exception as e:
-        if (
-            isinstance(vector_store, AsyncPgVector)
-            and ingestion_attempt_id
-            and processed_chunks
-        ):
-            try:
-                await vector_store.delete_by_metadata(
-                    {
-                        "file_id": file_id,
-                        _INGESTION_ATTEMPT_ID_KEY: ingestion_attempt_id,
-                    },
-                    executor=executor,
-                )
-            except Exception as cleanup_error:
-                logger.error(
-                    "Streaming ingestion rollback failed | user_id=%s | file_id=%s | error=%s",
-                    user_id,
-                    file_id,
-                    cleanup_error,
-                )
+        try:
+            await _rollback_completed_streaming_windows(
+                file_id,
+                user_id,
+                ids,
+                ingestion_attempt_id,
+                executor,
+            )
+        except Exception as cleanup_error:
+            logger.error(
+                "Streaming ingestion rollback failed | user_id=%s | file_id=%s | error=%s",
+                user_id,
+                file_id,
+                cleanup_error,
+            )
         logger.error(
             "Failed to store data in vector DB | %s | elapsed_ms=%d | Error: %s | Traceback: %s",
             build_ingestion_context(

@@ -501,6 +501,26 @@ class TestStreamingIngestion:
             _iter_recursive_text_chunks(splitter, text, splitter._separators)
         ) == splitter.split_text(text)
 
+    def test_streaming_splitter_yields_before_consuming_a_large_source(self):
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        import app.routes.document_routes as routes
+
+        consumed = 0
+
+        def source_splits(*_args, **_kwargs):
+            nonlocal consumed
+            for _ in range(1_000):
+                consumed += 1
+                yield "word"
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=40, chunk_overlap=8)
+        with patch.object(routes, "_iter_separator_splits", source_splits):
+            chunks = routes._iter_recursive_text_chunks(splitter, "ignored", [" "])
+            assert next(chunks)
+
+        assert consumed < 1_000
+
     @pytest.mark.asyncio
     async def test_chunk_indexes_and_attempt_span_multiple_windows(self):
         import app.routes.document_routes as routes
@@ -598,3 +618,79 @@ class TestStreamingIngestion:
 
         assert "error" not in second_result
         assert second_insert_started.is_set()
+
+    @pytest.mark.asyncio
+    async def test_sync_failure_in_a_later_window_rolls_back_prior_windows(self):
+        import app.routes.document_routes as routes
+
+        mock_store = Mock()
+        mock_store.add_documents = Mock(
+            side_effect=[["rollback-file"], RuntimeError("embedding failed")]
+        )
+        mock_store.delete_scoped = Mock()
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as executor,
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 1),
+            patch.object(routes, "PARALLEL_EXECUTION", 1),
+            patch.object(routes, "RAG_INGESTION_WINDOW_SIZE", 1),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+        ):
+            result = await routes.store_data_in_vector_db(
+                [Document(page_content="one"), Document(page_content="two")],
+                "rollback-file",
+                "user",
+                executor=executor,
+            )
+
+        assert "error" in result
+        mock_store.delete_scoped.assert_called_once_with(
+            ids=["rollback-file"], owners=["user"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_cancellation_drains_insert_before_rollback(self):
+        import app.routes.document_routes as routes
+
+        insert_started = threading.Event()
+        release_insert = threading.Event()
+        operations = []
+
+        def add_documents(documents, ids=None):
+            insert_started.set()
+            release_insert.wait(timeout=2)
+            operations.append("insert")
+            return ids
+
+        def delete_scoped(ids=None, owners=None):
+            operations.append("rollback")
+
+        mock_store = Mock()
+        mock_store.add_documents = add_documents
+        mock_store.delete_scoped = delete_scoped
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as executor,
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 1),
+            patch.object(routes, "PARALLEL_EXECUTION", 1),
+            patch.object(routes, "RAG_INGESTION_WINDOW_SIZE", 1),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+        ):
+            task = asyncio.create_task(
+                routes.store_data_in_vector_db(
+                    [Document(page_content="one")],
+                    "cancelled-file",
+                    "user",
+                    executor=executor,
+                )
+            )
+            await asyncio.to_thread(insert_started.wait, 1)
+            task.cancel()
+            release_insert.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert operations == ["insert", "rollback"]

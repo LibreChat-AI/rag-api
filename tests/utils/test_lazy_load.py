@@ -418,6 +418,93 @@ def test_safe_pdf_loader_load_delegates_to_lazy_load(tmp_path):
         assert ld.page_content == lz.page_content
 
 
+def test_safe_pdf_loader_preserves_pypdf_output(tmp_path):
+    from langchain_community.document_loaders import PyPDFLoader
+
+    pdf_path = tmp_path / "parity.pdf"
+    _make_pdf(str(pdf_path), num_pages=3)
+
+    expected = list(PyPDFLoader(str(pdf_path), extract_images=False).lazy_load())
+    actual = list(SafePyPDFLoader(str(pdf_path), extract_images=False).lazy_load())
+
+    assert [document.page_content for document in actual] == [
+        document.page_content for document in expected
+    ]
+    assert [document.metadata for document in actual] == [
+        document.metadata for document in expected
+    ]
+
+
+def _track_pdf_readers(monkeypatch):
+    import pypdf
+
+    reader_class = pypdf.PdfReader
+    readers = []
+
+    class TrackingReader(reader_class):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.close_called = False
+            readers.append(self)
+
+        def close(self):
+            self.close_called = True
+            return super().close()
+
+    monkeypatch.setattr(pypdf, "PdfReader", TrackingReader)
+    return readers
+
+
+def test_safe_pdf_loader_closes_reader_after_repeated_loads(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "repeated.pdf"
+    _make_pdf(str(pdf_path), num_pages=3)
+    readers = _track_pdf_readers(monkeypatch)
+
+    for _ in range(5):
+        assert len(
+            list(SafePyPDFLoader(str(pdf_path), extract_images=False).lazy_load())
+        ) == 3
+
+    assert len(readers) == 5
+    assert all(reader.close_called for reader in readers)
+
+
+def test_safe_pdf_loader_closes_reader_when_iteration_stops_early(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "cancelled.pdf"
+    _make_pdf(str(pdf_path), num_pages=2)
+    readers = _track_pdf_readers(monkeypatch)
+    documents = SafePyPDFLoader(str(pdf_path), extract_images=False).lazy_load()
+
+    next(documents)
+    documents.close()
+
+    assert len(readers) == 1
+    assert readers[0].close_called
+
+
+def test_safe_pdf_loader_closes_reader_after_extraction_error(
+    tmp_path, monkeypatch
+):
+    import pypdf
+
+    pdf_path = tmp_path / "broken.pdf"
+    _make_pdf(str(pdf_path))
+    readers = _track_pdf_readers(monkeypatch)
+
+    def fail_extraction(*_args, **_kwargs):
+        raise RuntimeError("extraction failed")
+
+    monkeypatch.setattr(pypdf.PageObject, "extract_text", fail_extraction)
+
+    with pytest.raises(RuntimeError, match="extraction failed"):
+        list(SafePyPDFLoader(str(pdf_path), extract_images=False).lazy_load())
+
+    assert len(readers) == 1
+    assert readers[0].close_called
+
+
 # ---------------------------------------------------------------------------
 # CSV with non-UTF-8 encoding
 # ---------------------------------------------------------------------------

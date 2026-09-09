@@ -567,12 +567,16 @@ class TestStreamingIngestion:
 
         parser_started = threading.Event()
         release_parser = threading.Event()
+        source_closed = threading.Event()
         second_insert_started = asyncio.Event()
 
         def blocking_source():
-            parser_started.set()
-            release_parser.wait(timeout=2)
-            yield Document(page_content="first")
+            try:
+                parser_started.set()
+                release_parser.wait(timeout=2)
+                yield Document(page_content="first")
+            finally:
+                source_closed.set()
 
         async def add_documents(documents, ids=None, executor=None):
             if ids == ["second-file"]:
@@ -618,6 +622,7 @@ class TestStreamingIngestion:
 
         assert "error" not in second_result
         assert second_insert_started.is_set()
+        assert source_closed.is_set()
 
     @pytest.mark.asyncio
     async def test_sync_failure_in_a_later_window_rolls_back_prior_windows(self):

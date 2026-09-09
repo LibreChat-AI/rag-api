@@ -1183,42 +1183,48 @@ def _prepare_document_windows_sync(
     """Split and enrich source documents without retaining the full file.
 
     Each source document is released after it is split. The caller receives at
-    most ``window_size`` chunks at a time, so parser and embedding working sets
-    cannot grow with the total number of pages or chunks in the upload.
+    most ``window_size`` prepared chunks at a time; parser-specific caches are
+    released when the source iterator closes.
     """
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
     )
     window: List[Document] = []
+    source_documents = iter(data)
 
-    for source_document in data:
-        for split_content in _iter_recursive_text_chunks(
-            text_splitter,
-            source_document.page_content,
-            text_splitter._separators,
-        ):
-            page_content = (
-                clean_text(split_content)
-                if clean_content
-                else split_content
-            )
-            window.append(
-                Document(
-                    page_content=page_content,
-                    metadata={
-                        "file_id": file_id,
-                        "user_id": user_id,
-                        "digest": generate_digest(page_content),
-                        **(source_document.metadata or {}),
-                    },
+    try:
+        for source_document in source_documents:
+            for split_content in _iter_recursive_text_chunks(
+                text_splitter,
+                source_document.page_content,
+                text_splitter._separators,
+            ):
+                page_content = (
+                    clean_text(split_content)
+                    if clean_content
+                    else split_content
                 )
-            )
-            if len(window) == window_size:
-                yield window
-                window = []
+                window.append(
+                    Document(
+                        page_content=page_content,
+                        metadata={
+                            "file_id": file_id,
+                            "user_id": user_id,
+                            "digest": generate_digest(page_content),
+                            **(source_document.metadata or {}),
+                        },
+                    )
+                )
+                if len(window) == window_size:
+                    yield window
+                    window = []
 
-    if window:
-        yield window
+        if window:
+            yield window
+    finally:
+        close_source = getattr(source_documents, "close", None)
+        if close_source is not None:
+            close_source()
 
 
 def _next_document_window(windows: Iterator[List[Document]]):

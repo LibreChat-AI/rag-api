@@ -261,13 +261,64 @@ class SafePyPDFLoader:
         self.extract_images = extract_images
         self._temp_filepath = None  # For compatibility with cleanup function
 
+    def _lazy_load_text_only(self, loader: PyPDFLoader) -> Iterator[Document]:
+        """Stream PDF pages and deterministically release pypdf caches."""
+        import pypdf
+        from langchain_core.documents.base import Blob
+        from langchain_community.document_loaders.parsers.pdf import (
+            _merge_text_and_extras,
+            _purge_metadata,
+            _validate_metadata,
+        )
+
+        parser = loader.parser
+        blob = Blob.from_path(self.filepath)
+        with blob.as_bytes_io() as pdf_file_obj:
+            pdf_reader = pypdf.PdfReader(pdf_file_obj, password=parser.password)
+            try:
+                raw_metadata = {
+                    "producer": "PyPDF",
+                    "creator": "PyPDF",
+                    "creationdate": "",
+                }
+                raw_metadata.update(dict(pdf_reader.metadata or {}))
+                raw_metadata.update(
+                    {
+                        "source": blob.source,
+                        "total_pages": len(pdf_reader.pages),
+                    }
+                )
+                document_metadata = _purge_metadata(raw_metadata)
+
+                for page_number, page in enumerate(pdf_reader.pages):
+                    page_text = page.extract_text(
+                        extraction_mode=parser.extraction_mode,
+                        **parser.extraction_kwargs,
+                    )
+                    content = _merge_text_and_extras(
+                        [parser.extract_images_from_page(page)], page_text
+                    ).strip()
+                    yield Document(
+                        page_content=content,
+                        metadata=_validate_metadata(
+                            document_metadata
+                            | {
+                                "page": page_number,
+                                "page_label": pdf_reader.page_labels[page_number],
+                            }
+                        ),
+                    )
+            finally:
+                pdf_reader.close()
+
     def lazy_load(self) -> Iterator[Document]:
         """Lazy load PDF documents with automatic fallback on image extraction errors."""
         loader = PyPDFLoader(self.filepath, extract_images=self.extract_images)
 
         if not self.extract_images:
-            # No image extraction: no fallback needed, stream directly
-            yield from loader.lazy_load()
+            # The upstream parser leaves PdfReader caches alive until cyclic GC.
+            # Closing at this boundary keeps repeated large ingestions bounded.
+            yield from self._lazy_load_text_only(loader)
             return
 
         # extract_images=True: must collect eagerly so that a mid-stream

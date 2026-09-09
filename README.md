@@ -265,7 +265,7 @@ When `EMBEDDING_BATCH_SIZE > 0`:
 - Complete file ingestions are limited by `RAG_INGESTION_CONCURRENCY`; `PARALLEL_EXECUTION` still controls batch consumers within one active file
 - The effective preparation window is `min(RAG_INGESTION_WINDOW_SIZE, EMBEDDING_BATCH_SIZE × PARALLEL_EXECUTION)`; increase the window as well when intentionally raising batch concurrency
 - On failure, remaining batch work is stopped and successfully inserted documents are rolled back
-- Memory usage is bounded by the preparation window plus queued and active embedding batches
+- Prepared-chunk memory is bounded by the preparation window plus queued and active embedding batches. Parser, provider-client and database-driver allocations remain outside this calculation
 - Ingestion lifecycle logs include route, user, file, chunk count, file size, elapsed time, and selected process memory context. Per-batch queue/insert progress is logged at debug level
 
 When `EMBEDDING_BATCH_SIZE <= 0`:

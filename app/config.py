@@ -82,6 +82,15 @@ CHUNK_SIZE = int(get_env_variable("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(get_env_variable("CHUNK_OVERLAP", "100"))
 PARALLEL_EXECUTION = int(get_env_variable("PARALLEL_EXECUTION", "2"))
 
+# Limit complete ingestion jobs per process. Batch-level parallelism is controlled
+# separately by PARALLEL_EXECUTION; without this guard, several large uploads can
+# each build their own parser and embedding working sets at the same time.
+RAG_INGESTION_CONCURRENCY = int(
+    get_env_variable("RAG_INGESTION_CONCURRENCY", "2")
+)
+if RAG_INGESTION_CONCURRENCY < 1:
+    raise ValueError("RAG_INGESTION_CONCURRENCY must be at least 1")
+
 # Batch processing configuration for memory-constrained environments.
 # When EMBEDDING_BATCH_SIZE > 0, documents are processed in batches to reduce
 # peak memory usage. This is useful for Kubernetes pods with memory limits.
@@ -94,6 +103,15 @@ PARALLEL_EXECUTION = int(get_env_variable("PARALLEL_EXECUTION", "2"))
 # Default of 500 is conservative and works well for most embedding providers.
 # Increase to 750 for higher throughput at the cost of higher peak memory.
 EMBEDDING_BATCH_SIZE = int(get_env_variable("EMBEDDING_BATCH_SIZE", "500"))
+
+# Maximum number of prepared chunks retained between parsing and insertion.
+# This bound is independent from the provider batch size so a large provider
+# batch cannot reintroduce full-document materialization.
+RAG_INGESTION_WINDOW_SIZE = int(
+    get_env_variable("RAG_INGESTION_WINDOW_SIZE", "100")
+)
+if RAG_INGESTION_WINDOW_SIZE < 1:
+    raise ValueError("RAG_INGESTION_WINDOW_SIZE must be at least 1")
 
 # Maximum number of batches to buffer in memory during async processing.
 # Higher values allow more parallelism but use more memory.

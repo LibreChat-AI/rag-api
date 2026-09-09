@@ -10,7 +10,7 @@ import aiofiles.os
 import asyncio
 import time
 from shutil import copyfileobj
-from typing import List, Iterable, Optional, Union, TYPE_CHECKING
+from typing import List, Iterable, Iterator, Optional, Union, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import (
     APIRouter,
@@ -43,6 +43,8 @@ from app.config import (
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_MAX_QUEUE_SIZE,
     PARALLEL_EXECUTION,
+    RAG_INGESTION_CONCURRENCY,
+    RAG_INGESTION_WINDOW_SIZE,
     RAG_DISTANCE_THRESHOLD,
 )
 from app.scope import file_clause, files_clause, resolve_scope
@@ -104,14 +106,23 @@ router = APIRouter()
 _INGESTION_ATTEMPT_ID_KEY = "_rag_ingestion_attempt_id"
 _INGESTION_ATTEMPT_STARTED_AT_NS_KEY = "_rag_ingestion_attempt_started_at_ns"
 _INGESTION_CHUNK_INDEX_KEY = "_rag_chunk_index"
+_INGESTION_SEMAPHORE = asyncio.Semaphore(RAG_INGESTION_CONCURRENCY)
+_END_OF_DOCUMENT_STREAM = object()
 
 
-def _tag_documents_for_ingestion(documents: List[Document], file_id: str) -> str:
+def _tag_documents_for_ingestion(
+    documents: List[Document],
+    file_id: str,
+    ingestion_attempt_id: Optional[str] = None,
+    ingestion_attempt_started_at_ns: Optional[int] = None,
+    chunk_index_offset: int = 0,
+) -> str:
     """Attach one attempt identity and source position to every document."""
-    ingestion_attempt_id = uuid.uuid4().hex
-    ingestion_attempt_started_at_ns = time.time_ns()
+    ingestion_attempt_id = ingestion_attempt_id or uuid.uuid4().hex
+    if ingestion_attempt_started_at_ns is None:
+        ingestion_attempt_started_at_ns = time.time_ns()
 
-    for chunk_index, document in enumerate(documents):
+    for chunk_index, document in enumerate(documents, start=chunk_index_offset):
         document.metadata = {
             **(document.metadata or {}),
             "file_id": file_id,
@@ -590,6 +601,9 @@ async def _process_documents_async_pipeline(
     executor: "ThreadPoolExecutor",
     parallel_execution: int = 1,
     user_id: str = "",
+    ingestion_attempt_id: Optional[str] = None,
+    ingestion_attempt_started_at_ns: Optional[int] = None,
+    chunk_index_offset: int = 0,
 ) -> List[str]:
     """
     Process documents using async producer-consumer pattern for batched embedding and insertion.
@@ -607,7 +621,13 @@ async def _process_documents_async_pipeline(
     if total_chunks == 0:
         return []
 
-    ingestion_attempt_id = _tag_documents_for_ingestion(documents, file_id)
+    ingestion_attempt_id = _tag_documents_for_ingestion(
+        documents,
+        file_id,
+        ingestion_attempt_id=ingestion_attempt_id,
+        ingestion_attempt_started_at_ns=ingestion_attempt_started_at_ns,
+        chunk_index_offset=chunk_index_offset,
+    )
 
     # Create queues for producer-consumer pattern
     # embedding_queue is bounded to limit document data held in memory.
@@ -981,6 +1001,58 @@ def _prepare_documents_sync(
     ]
 
 
+def _prepare_document_windows_sync(
+    data: Iterable[Document],
+    file_id: str,
+    user_id: str,
+    clean_content: bool,
+    window_size: int,
+) -> Iterator[List[Document]]:
+    """Split and enrich source documents without retaining the full file.
+
+    Each source document is released after it is split. The caller receives at
+    most ``window_size`` chunks at a time, so parser and embedding working sets
+    cannot grow with the total number of pages or chunks in the upload.
+    """
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
+    )
+    window: List[Document] = []
+
+    for source_document in data:
+        for document in text_splitter.split_documents([source_document]):
+            page_content = (
+                clean_text(document.page_content)
+                if clean_content
+                else document.page_content
+            )
+            window.append(
+                Document(
+                    page_content=page_content,
+                    metadata={
+                        "file_id": file_id,
+                        "user_id": user_id,
+                        "digest": generate_digest(page_content),
+                        **(document.metadata or {}),
+                    },
+                )
+            )
+            if len(window) == window_size:
+                yield window
+                window = []
+
+    if window:
+        yield window
+
+
+def _next_document_window(windows: Iterator[List[Document]]):
+    """Return one prepared window without leaking StopIteration through a Future."""
+    try:
+        return next(windows)
+    except StopIteration:
+        return _END_OF_DOCUMENT_STREAM
+
+
 async def store_data_in_vector_db(
     data: Iterable[Document],
     file_id: str,
@@ -992,34 +1064,56 @@ async def store_data_in_vector_db(
     content_type: Optional[str] = None,
     temp_file_path: Optional[str] = None,
 ) -> bool:
-    start_time = time.perf_counter()
-    # Run document preparation in executor to avoid blocking the event loop
-    loop = asyncio.get_running_loop()
-    docs = await loop.run_in_executor(
-        executor,
-        _prepare_documents_sync,
-        data,
-        file_id,
-        user_id,
-        clean_content,
-    )
+    if _INGESTION_SEMAPHORE.locked():
+        logger.info(
+            "Ingestion queued | route=%s | user_id=%s | file_id=%s",
+            route_name,
+            user_id,
+            file_id,
+        )
 
-    logger.info(
-        "Documents prepared | %s",
-        build_ingestion_context(
-            route_name=route_name,
-            user_id=user_id,
+    async with _INGESTION_SEMAPHORE:
+        return await _store_data_in_vector_db(
+            data=data,
             file_id=file_id,
-            filename=filename or file_id,
+            user_id=user_id,
+            clean_content=clean_content,
+            executor=executor,
+            route_name=route_name,
+            filename=filename,
             content_type=content_type,
             temp_file_path=temp_file_path,
-            chunk_count=len(docs),
-            include_memory=True,
-        ),
-    )
+        )
+
+
+async def _store_data_in_vector_db(
+    data: Iterable[Document],
+    file_id: str,
+    user_id: str = "",
+    clean_content: bool = False,
+    executor=None,
+    route_name: str = "unknown",
+    filename: Optional[str] = None,
+    content_type: Optional[str] = None,
+    temp_file_path: Optional[str] = None,
+) -> bool:
+    start_time = time.perf_counter()
+    loop = asyncio.get_running_loop()
+    processed_chunks = 0
+    ingestion_attempt_id = None
+    ingestion_attempt_started_at_ns = None
 
     try:
         if EMBEDDING_BATCH_SIZE <= 0:
+            docs = await loop.run_in_executor(
+                executor,
+                _prepare_documents_sync,
+                data,
+                file_id,
+                user_id,
+                clean_content,
+            )
+            processed_chunks = len(docs)
             # synchronously embed the file and insert into vector store in one go
             if isinstance(vector_store, AsyncPgVector):
                 _tag_documents_for_ingestion(docs, file_id)
@@ -1029,24 +1123,65 @@ async def store_data_in_vector_db(
             else:
                 ids = vector_store.add_documents(docs, ids=[file_id] * len(docs))
         else:
-            # asynchronously embed the file and insert into vector store as it is embedding
-            # to lessen memory impact and speed up slightly as the majority of the document
-            # is inserted into db by the time it is fully embedded
-
-            if isinstance(vector_store, AsyncPgVector):
-                ids = await _process_documents_async_pipeline(
-                    docs,
+            # Keep only the chunks that can be actively processed in memory. The
+            # existing batch pipeline still owns insertion, rollback and ordering.
+            window_size = min(
+                RAG_INGESTION_WINDOW_SIZE,
+                EMBEDDING_BATCH_SIZE * max(1, PARALLEL_EXECUTION),
+            )
+            windows = iter(
+                _prepare_document_windows_sync(
+                    data,
                     file_id,
-                    vector_store,
-                    executor,
-                    parallel_execution=max(1, PARALLEL_EXECUTION),
-                    user_id=user_id,
+                    user_id,
+                    clean_content,
+                    window_size,
                 )
-            else:
-                # Fallback to batched processing for sync vector stores
-                ids = await _process_documents_batched_sync(
-                    docs, file_id, user_id, vector_store, executor
+            )
+            ids = []
+            ingestion_attempt_id = uuid.uuid4().hex
+            ingestion_attempt_started_at_ns = time.time_ns()
+
+            while True:
+                docs = await loop.run_in_executor(
+                    executor, _next_document_window, windows
                 )
+                if docs is _END_OF_DOCUMENT_STREAM:
+                    break
+
+                chunk_index_offset = processed_chunks
+                processed_chunks += len(docs)
+                logger.info(
+                    "Document window prepared | %s",
+                    build_ingestion_context(
+                        route_name=route_name,
+                        user_id=user_id,
+                        file_id=file_id,
+                        filename=filename or file_id,
+                        content_type=content_type,
+                        temp_file_path=temp_file_path,
+                        chunk_count=len(docs),
+                        include_memory=True,
+                    ),
+                )
+
+                if isinstance(vector_store, AsyncPgVector):
+                    window_ids = await _process_documents_async_pipeline(
+                        docs,
+                        file_id,
+                        vector_store,
+                        executor,
+                        parallel_execution=max(1, PARALLEL_EXECUTION),
+                        user_id=user_id,
+                        ingestion_attempt_id=ingestion_attempt_id,
+                        ingestion_attempt_started_at_ns=ingestion_attempt_started_at_ns,
+                        chunk_index_offset=chunk_index_offset,
+                    )
+                else:
+                    window_ids = await _process_documents_batched_sync(
+                        docs, file_id, user_id, vector_store, executor
+                    )
+                ids.extend(window_ids)
 
         logger.info(
             "Ingestion completed | %s | inserted_ids=%d | elapsed_ms=%d",
@@ -1057,7 +1192,7 @@ async def store_data_in_vector_db(
                 filename=filename or file_id,
                 content_type=content_type,
                 temp_file_path=temp_file_path,
-                chunk_count=len(docs),
+                chunk_count=processed_chunks,
                 include_memory=True,
             ),
             len(ids),
@@ -1065,7 +1200,41 @@ async def store_data_in_vector_db(
         )
         return {"message": "Documents added successfully", "ids": ids}
 
+    except asyncio.CancelledError:
+        if (
+            isinstance(vector_store, AsyncPgVector)
+            and ingestion_attempt_id
+            and processed_chunks
+        ):
+            await vector_store.delete_by_metadata(
+                {
+                    "file_id": file_id,
+                    _INGESTION_ATTEMPT_ID_KEY: ingestion_attempt_id,
+                },
+                executor=executor,
+            )
+        raise
     except Exception as e:
+        if (
+            isinstance(vector_store, AsyncPgVector)
+            and ingestion_attempt_id
+            and processed_chunks
+        ):
+            try:
+                await vector_store.delete_by_metadata(
+                    {
+                        "file_id": file_id,
+                        _INGESTION_ATTEMPT_ID_KEY: ingestion_attempt_id,
+                    },
+                    executor=executor,
+                )
+            except Exception as cleanup_error:
+                logger.error(
+                    "Streaming ingestion rollback failed | user_id=%s | file_id=%s | error=%s",
+                    user_id,
+                    file_id,
+                    cleanup_error,
+                )
         logger.error(
             "Failed to store data in vector DB | %s | elapsed_ms=%d | Error: %s | Traceback: %s",
             build_ingestion_context(
@@ -1075,7 +1244,7 @@ async def store_data_in_vector_db(
                 filename=filename or file_id,
                 content_type=content_type,
                 temp_file_path=temp_file_path,
-                chunk_count=len(docs),
+                chunk_count=processed_chunks,
                 include_memory=True,
             ),
             int((time.perf_counter() - start_time) * 1000),
@@ -1123,9 +1292,7 @@ async def embed_local_file(
             document.filename, document.file_content_type, file_path
         )
         loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(
-            request.app.state.thread_pool, lambda: list(loader.lazy_load())
-        )
+        data = loader.lazy_load()
 
         result = await store_data_in_vector_db(
             data,
@@ -1139,7 +1306,7 @@ async def embed_local_file(
             temp_file_path=file_path,
         )
 
-        if result:
+        if result and "error" not in result:
             return {
                 "status": True,
                 "file_id": document.file_id,
@@ -1196,6 +1363,7 @@ async def embed_file(
     response_status = True
     response_message = "File processed successfully."
     known_type = None
+    loader = None
 
     user_id = get_user_id(request, entity_id)
     validated_file_path = _make_unique_temp_path(user_id, file.filename)
@@ -1226,12 +1394,10 @@ async def embed_file(
         )
         os.makedirs(os.path.dirname(validated_file_path), exist_ok=True)
         await save_upload_file_async(file, validated_file_path)
-        data, known_type, file_ext = await load_file_content(
-            file.filename,
-            file.content_type,
-            validated_file_path,
-            request.app.state.thread_pool,
+        loader, known_type, file_ext = get_loader(
+            file.filename, file.content_type, validated_file_path
         )
+        data = loader.lazy_load()
 
         logger.debug(
             "Loading file | filename=%s | content_type=%s | file_ext=%s | known_type=%s",
@@ -1298,6 +1464,8 @@ async def embed_file(
             detail=f"Error during file processing: {str(e)}",
         )
     finally:
+        if loader is not None:
+            cleanup_temp_encoding_file(loader)
         await cleanup_temp_file_async(validated_file_path)
 
     return {
@@ -1367,6 +1535,7 @@ async def embed_file_upload(
     entity_id: str = Form(None),
 ):
     user_id = get_user_id(request, entity_id)
+    loader = None
 
     validated_temp_file_path = _make_unique_temp_path(user_id, uploaded_file.filename)
 
@@ -1396,12 +1565,12 @@ async def embed_file_upload(
         )
         os.makedirs(os.path.dirname(validated_temp_file_path), exist_ok=True)
         await save_upload_file_async(uploaded_file, validated_temp_file_path)
-        data, known_type, file_ext = await load_file_content(
+        loader, known_type, file_ext = get_loader(
             uploaded_file.filename,
             uploaded_file.content_type,
             validated_temp_file_path,
-            request.app.state.thread_pool,
         )
+        data = loader.lazy_load()
 
         result = await store_data_in_vector_db(
             data,
@@ -1415,7 +1584,7 @@ async def embed_file_upload(
             temp_file_path=validated_temp_file_path,
         )
 
-        if not result:
+        if not result or "error" in result:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to process/store the file data.",
@@ -1444,6 +1613,8 @@ async def embed_file_upload(
             detail=f"Error during file processing: {str(e)}",
         )
     finally:
+        if loader is not None:
+            cleanup_temp_encoding_file(loader)
         await cleanup_temp_file_async(validated_temp_file_path)
 
     return {

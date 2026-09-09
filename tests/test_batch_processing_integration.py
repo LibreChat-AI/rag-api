@@ -7,6 +7,8 @@ Mark with @pytest.mark.integration to skip in normal test runs.
 
 Run with: pytest tests/test_batch_processing_integration.py -v -m integration
 """
+import asyncio
+
 import pytest
 import tracemalloc
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
@@ -356,3 +358,128 @@ class TestConfigurationBehavior:
                 f"batch_size={batch_size}, docs={doc_count}: "
                 f"expected {expected_batches} batches, got {actual_batches}"
             )
+
+
+class TestStreamingIngestion:
+    """Production ingestion must stay bounded before the vector-store call."""
+
+    @pytest.mark.asyncio
+    async def test_does_not_consume_the_full_source_before_first_insert(self):
+        import app.routes.document_routes as routes
+
+        consumed = 0
+        first_insert_started = asyncio.Event()
+        release_first_insert = asyncio.Event()
+
+        def source_documents():
+            nonlocal consumed
+            for index in range(5):
+                consumed += 1
+                yield Document(page_content=f"page {index}", metadata={"page": index})
+
+        async def add_documents(documents, ids=None, executor=None):
+            first_insert_started.set()
+            await release_first_insert.wait()
+            return ids
+
+        mock_store = AsyncMock()
+        mock_store.aadd_documents = add_documents
+        mock_store.delete_by_metadata = AsyncMock()
+
+        with (
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 500),
+            patch.object(routes, "PARALLEL_EXECUTION", 2),
+            patch.object(routes, "RAG_INGESTION_WINDOW_SIZE", 1),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+            patch.object(routes, "isinstance", return_value=True),
+        ):
+            task = asyncio.create_task(
+                routes.store_data_in_vector_db(
+                    source_documents(), "streamed-file", "user", executor=None
+                )
+            )
+            await asyncio.wait_for(first_insert_started.wait(), timeout=1)
+            assert consumed == 1
+
+            release_first_insert.set()
+            result = await task
+
+        assert consumed == 5
+        assert len(result["ids"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_limits_complete_ingestions_per_process(self):
+        import app.routes.document_routes as routes
+
+        active = 0
+        max_active = 0
+
+        async def add_documents(documents, ids=None, executor=None):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return ids
+
+        mock_store = AsyncMock()
+        mock_store.aadd_documents = add_documents
+        mock_store.delete_by_metadata = AsyncMock()
+
+        with (
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 1),
+            patch.object(routes, "PARALLEL_EXECUTION", 1),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+            patch.object(routes, "isinstance", return_value=True),
+        ):
+            results = await asyncio.gather(
+                routes.store_data_in_vector_db(
+                    [Document(page_content="one")], "file-one", "user"
+                ),
+                routes.store_data_in_vector_db(
+                    [Document(page_content="two")], "file-two", "user"
+                ),
+            )
+
+        assert max_active == 1
+        assert all("error" not in result for result in results)
+
+    @pytest.mark.asyncio
+    async def test_failure_in_a_later_window_rolls_back_the_whole_attempt(self):
+        import app.routes.document_routes as routes
+
+        inserted_documents = []
+
+        async def add_documents(documents, ids=None, executor=None):
+            inserted_documents.extend(documents)
+            if len(inserted_documents) > 1:
+                raise RuntimeError("embedding failed")
+            return ids
+
+        mock_store = AsyncMock()
+        mock_store.aadd_documents = add_documents
+        mock_store.delete_by_metadata = AsyncMock()
+
+        with (
+            patch.object(routes, "vector_store", mock_store),
+            patch.object(routes, "EMBEDDING_BATCH_SIZE", 1),
+            patch.object(routes, "PARALLEL_EXECUTION", 1),
+            patch.object(routes, "_INGESTION_SEMAPHORE", asyncio.Semaphore(1)),
+            patch.object(routes, "isinstance", return_value=True),
+        ):
+            result = await routes.store_data_in_vector_db(
+                [Document(page_content="one"), Document(page_content="two")],
+                "rollback-file",
+                "user",
+            )
+
+        assert "error" in result
+        metadata_filter = mock_store.delete_by_metadata.call_args.args[0]
+        assert metadata_filter["file_id"] == "rollback-file"
+        assert metadata_filter["_rag_ingestion_attempt_id"]
+        assert {
+            document.metadata["_rag_ingestion_attempt_id"]
+            for document in inserted_documents
+        } == {metadata_filter["_rag_ingestion_attempt_id"]}

@@ -198,6 +198,31 @@ def test_embed_local_file(tmp_path, auth_headers, monkeypatch):
     assert json_data["file_id"] == "testid1"
 
 
+def test_embed_local_file_reports_storage_failure(
+    tmp_path, auth_headers, monkeypatch
+):
+    monkeypatch.setattr(document_routes, "RAG_UPLOAD_DIR", str(tmp_path))
+    test_file = tmp_path / "failed.txt"
+    test_file.write_text("This document cannot be stored.")
+
+    async def fail_storage(*args, **kwargs):
+        return {"message": "storage failed", "error": "embedding failed"}
+
+    monkeypatch.setattr(document_routes, "store_data_in_vector_db", fail_storage)
+    response = client.post(
+        "/local/embed",
+        json={
+            "filepath": "failed.txt",
+            "filename": "failed.txt",
+            "file_content_type": "text/plain",
+            "file_id": "failed-id",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 500
+
+
 def test_embed_file(tmp_path, auth_headers):
     file_content = "This is a test file for the embed endpoint."
     test_file = tmp_path / "test_embed.txt"
@@ -308,6 +333,33 @@ def test_embed_file_upload(tmp_path, auth_headers, monkeypatch):
     json_data = response.json()
     assert json_data["status"] is True
     assert json_data["file_id"] == "testid1"
+
+
+def test_embed_file_upload_reports_storage_failure(
+    tmp_path, auth_headers, monkeypatch
+):
+    test_file = tmp_path / "failed-upload.txt"
+    test_file.write_text("This document cannot be stored.")
+
+    async def fail_storage(*args, **kwargs):
+        return {"message": "storage failed", "error": "embedding failed"}
+
+    monkeypatch.setattr(document_routes, "store_data_in_vector_db", fail_storage)
+    with test_file.open("rb") as file_handle:
+        response = client.post(
+            "/embed-upload",
+            data={"file_id": "failed-id", "entity_id": "testuser"},
+            files={
+                "uploaded_file": (
+                    "failed-upload.txt",
+                    file_handle,
+                    "text/plain",
+                )
+            },
+            headers=auth_headers,
+        )
+
+    assert response.status_code == 500
 
 
 def test_query_multiple(auth_headers):

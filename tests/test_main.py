@@ -325,6 +325,52 @@ def test_query_multiple(auth_headers):
         assert doc["page_content"] == "Queried content"
 
 
+def test_health_check_up(monkeypatch):
+    """When the backing store is reachable, /health returns 200 UP."""
+
+    async def healthy():
+        return True
+
+    monkeypatch.setattr(document_routes, "is_health_ok", healthy)
+
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "UP"}
+
+
+def test_health_check_down(monkeypatch):
+    """When the store is unreachable, /health must return HTTP 503 (not 200).
+
+    Regression test: the handler previously did `return {...}, 503`, a Flask
+    idiom. FastAPI serializes the whole tuple as the body and keeps the status
+    at 200, so liveness/readiness probes saw a downed service as healthy.
+    """
+
+    async def unhealthy():
+        return False
+
+    monkeypatch.setattr(document_routes, "is_health_ok", unhealthy)
+
+    response = client.get("/health")
+    assert response.status_code == 503
+    assert response.json() == {"status": "DOWN"}
+
+
+def test_health_check_exception(monkeypatch):
+    """An exception during the check is reported as HTTP 503, not 500/200."""
+
+    async def boom():
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(document_routes, "is_health_ok", boom)
+
+    response = client.get("/health")
+    assert response.status_code == 503
+    json_data = response.json()
+    assert json_data["status"] == "DOWN"
+    assert "db gone" in json_data["error"]
+
+
 def test_extract_text_from_file(tmp_path, auth_headers):
     """Test the /text endpoint for text extraction without embeddings."""
     file_content = "This is a test file for text extraction.\nIt has multiple lines.\nAnd should be extracted properly."

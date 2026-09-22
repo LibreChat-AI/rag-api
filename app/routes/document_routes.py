@@ -23,6 +23,7 @@ from fastapi import (
     Query,
     status,
 )
+from fastapi.responses import JSONResponse
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from functools import lru_cache
@@ -425,14 +426,20 @@ async def health_check():
             return {"status": "UP"}
         else:
             logger.error("Health check failed")
-            return {"status": "DOWN"}, 503
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"status": "DOWN"},
+            )
     except Exception as e:
         logger.error(
             "Error during health check | Error: %s | Traceback: %s",
             str(e),
             traceback.format_exc(),
         )
-        return {"status": "DOWN", "error": str(e)}, 503
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "DOWN", "error": str(e)},
+        )
 
 
 @router.get("/documents", response_model=list[DocumentResponse])

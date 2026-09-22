@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.utils.document_loader import get_loader, clean_text, process_documents
+from app.utils.document_loader import (
+    get_loader,
+    clean_text,
+    clean_metadata,
+    process_documents,
+)
 from langchain_community.document_loaders import (
     TextLoader,
     UnstructuredMarkdownLoader,
@@ -17,6 +22,42 @@ def test_clean_text():
     cleaned = clean_text(text)
     assert "\x00" not in cleaned
     assert cleaned == "HelloWorld"
+
+
+def test_clean_metadata_strips_nul_from_string_value():
+    """Failure NUL in `producer` from a Canon/Adobe-PSL PDF."""
+    metadata = {"producer": "Adobe PSL 1.3e for Canon\x00"}
+    cleaned = clean_metadata(metadata)
+    assert "\x00" not in cleaned["producer"]
+    assert cleaned["producer"] == "Adobe PSL 1.3e for Canon"
+
+
+def test_clean_metadata_recurses_into_nested_dict_and_list():
+    metadata = {
+        "title": "Doc\x00",
+        "nested": {"creator": "Tool\x00", "level": {"deep": "x\x00y"}},
+        "tags": ["a\x00", "b", {"k": "c\x00"}],
+    }
+    cleaned = clean_metadata(metadata)
+    assert cleaned["title"] == "Doc"
+    assert cleaned["nested"]["creator"] == "Tool"
+    assert cleaned["nested"]["level"]["deep"] == "xy"
+    assert cleaned["tags"][0] == "a"
+    assert cleaned["tags"][1] == "b"
+    assert cleaned["tags"][2]["k"] == "c"
+
+
+def test_clean_metadata_preserves_non_string_values():
+    """No over-stripping: ints, floats, bools, None and clean strings pass through."""
+    metadata = {
+        "page": 1,
+        "score": 0.5,
+        "flag": True,
+        "missing": None,
+        "source": "report.pdf",
+    }
+    cleaned = clean_metadata(metadata)
+    assert cleaned == metadata
 
 
 def test_get_loader_text(tmp_path):

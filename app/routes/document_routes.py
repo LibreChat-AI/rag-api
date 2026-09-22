@@ -94,6 +94,7 @@ from app.services.vector_store.async_pg_vector import AsyncPgVector
 from app.utils.document_loader import (
     get_loader,
     clean_text,
+    clean_metadata,
     process_documents,
     cleanup_temp_encoding_file,
 )
@@ -974,7 +975,7 @@ def _prepare_documents_sync(
                 "file_id": file_id,
                 "user_id": user_id,
                 "digest": generate_digest(doc.page_content),
-                **(doc.metadata or {}),
+                **clean_metadata(doc.metadata or {}),
             },
         )
         for doc in documents

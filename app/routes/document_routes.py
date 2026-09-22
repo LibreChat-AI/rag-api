@@ -1139,18 +1139,26 @@ async def embed_local_file(
             temp_file_path=file_path,
         )
 
-        if result:
-            return {
-                "status": True,
-                "file_id": document.file_id,
-                "filename": document.filename,
-                "known_type": known_type,
-            }
-        else:
+        # store_data_in_vector_db always returns a dict, with an "error" key on
+        # failure. Treat that (or a falsy result) as a real failure instead of
+        # reporting status:True for documents that were never persisted.
+        if not result or "error" in result:
+            error_detail = (
+                result["error"]
+                if isinstance(result, dict) and isinstance(result.get("error"), str)
+                else ERROR_MESSAGES.DEFAULT()
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=ERROR_MESSAGES.DEFAULT(),
+                detail=error_detail,
             )
+
+        return {
+            "status": True,
+            "file_id": document.file_id,
+            "filename": document.filename,
+            "known_type": known_type,
+        }
     except HTTPException as http_exc:
         logger.error(
             "HTTP Exception in embed_local_file | route=local_embed | user_id=%s | file_id=%s | filename=%s | status=%d | detail=%s",
@@ -1415,10 +1423,18 @@ async def embed_file_upload(
             temp_file_path=validated_temp_file_path,
         )
 
-        if not result:
+        # store_data_in_vector_db always returns a dict, with an "error" key on
+        # failure. Treat that (or a falsy result) as a real failure instead of
+        # reporting success for documents that were never persisted.
+        if not result or "error" in result:
+            error_detail = (
+                result["error"]
+                if isinstance(result, dict) and isinstance(result.get("error"), str)
+                else "Failed to process/store the file data."
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to process/store the file data.",
+                detail=error_detail,
             )
     except HTTPException as http_exc:
         logger.error(

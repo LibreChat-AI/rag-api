@@ -353,3 +353,49 @@ def test_extract_text_from_file(tmp_path, auth_headers):
     assert json_data["file_id"] == "test_text_123"
     assert json_data["filename"] == "test_text_extraction.txt"
     assert json_data["known_type"] is True  # text files are known types
+
+
+def test_embed_local_file_storage_error_returns_500(tmp_path, auth_headers, monkeypatch):
+    """A storage failure must surface as an error, not a false success.
+
+    Regression: embed_local_file used `if result:` and store_data_in_vector_db
+    always returns a (truthy) dict, so it returned status:True even when the
+    documents were never persisted.
+    """
+    monkeypatch.setattr(document_routes, "RAG_UPLOAD_DIR", str(tmp_path))
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("This is a test document.")
+
+    async def failing_store(*args, **kwargs):
+        return {"message": "An error occurred while adding documents.", "error": "boom"}
+
+    monkeypatch.setattr(document_routes, "store_data_in_vector_db", failing_store)
+
+    data = {
+        "filepath": "test.txt",
+        "filename": "test.txt",
+        "file_content_type": "text/plain",
+        "file_id": "testid1",
+    }
+    response = client.post("/local/embed", json=data, headers=auth_headers)
+    assert response.status_code == 500, f"Response: {response.text}"
+
+
+def test_embed_file_upload_storage_error_returns_500(tmp_path, auth_headers, monkeypatch):
+    """embed-upload must not report success when nothing was persisted."""
+    test_file = tmp_path / "upload_test.txt"
+    test_file.write_text("Test content for embed upload.")
+
+    async def failing_store(*args, **kwargs):
+        return {"message": "An error occurred while adding documents.", "error": "boom"}
+
+    monkeypatch.setattr(document_routes, "store_data_in_vector_db", failing_store)
+
+    with test_file.open("rb") as f:
+        response = client.post(
+            "/embed-upload",
+            data={"file_id": "testid1", "entity_id": "testuser"},
+            files={"uploaded_file": ("upload_test.txt", f, "text/plain")},
+            headers=auth_headers,
+        )
+    assert response.status_code == 500, f"Response: {response.text}"

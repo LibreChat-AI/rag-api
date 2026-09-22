@@ -57,6 +57,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Registry names must be lowercase, and the repository owner is not guaranteed to be.
+      - name: Resolve image name
+        env:
+          IMAGE_NAME: ${{ matrix.image_name }}
+        run: printf 'GHCR_IMAGE=ghcr.io/%s/%s\n' "${GITHUB_REPOSITORY_OWNER,,}" "$IMAGE_NAME" >> "$GITHUB_ENV"
+
       # Build and push Docker images for each target
       - name: Build and push Docker images
         uses: docker/build-push-action@v5
@@ -65,8 +71,8 @@ jobs:
           file: ${{ matrix.file }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}:latest
+            ${{ env.GHCR_IMAGE }}:${{ github.sha }}
+            ${{ env.GHCR_IMAGE }}:latest
           platforms: linux/amd64,linux/arm64
           target: ${{ matrix.target }}
           cache-from: type=gha

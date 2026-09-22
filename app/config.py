@@ -57,6 +57,7 @@ POSTGRES_USE_UNIX_SOCKET = (
 POSTGRES_DB = get_env_variable("POSTGRES_DB", "mydatabase")
 POSTGRES_USER = get_env_variable("POSTGRES_USER", "myuser")
 POSTGRES_PASSWORD = get_env_variable("POSTGRES_PASSWORD", "mypassword")
+POSTGRES_DATABASE_ARGS = get_env_variable("POSTGRES_DATABASE_ARGS", "")
 DB_HOST = get_env_variable("DB_HOST", "db")
 DB_PORT = get_env_variable("DB_PORT", "5432")
 PGVECTOR_CREATE_EXTENSION = get_env_variable(
@@ -104,8 +105,12 @@ PDF_EXTRACT_IMAGES = True if env_value == "true" else False
 
 if POSTGRES_USE_UNIX_SOCKET:
     connection_suffix = f"{urllib.parse.quote_plus(POSTGRES_USER)}:{urllib.parse.quote_plus(POSTGRES_PASSWORD)}@/{urllib.parse.quote_plus(POSTGRES_DB)}?host={urllib.parse.quote_plus(DB_HOST)}"
+    if POSTGRES_DATABASE_ARGS:
+        connection_suffix = f"{connection_suffix}&{POSTGRES_DATABASE_ARGS}"
 else:
     connection_suffix = f"{urllib.parse.quote_plus(POSTGRES_USER)}:{urllib.parse.quote_plus(POSTGRES_PASSWORD)}@{DB_HOST}:{DB_PORT}/{urllib.parse.quote_plus(POSTGRES_DB)}"
+    if POSTGRES_DATABASE_ARGS:
+        connection_suffix = f"{connection_suffix}?{POSTGRES_DATABASE_ARGS}"
 
 CONNECTION_STRING = f"postgresql+psycopg2://{connection_suffix}"
 DSN = f"postgresql://{connection_suffix}"

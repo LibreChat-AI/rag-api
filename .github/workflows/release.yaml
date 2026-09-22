@@ -13,5 +13,8 @@ permissions:
 jobs:
   call-docker-build:
     uses: ./.github/workflows/docker-build-workflow.yaml
+    # The mirror step reads LEGACY_GHCR_TOKEN, and a called workflow gets no
+    # secrets unless they are passed.
+    secrets: inherit
     with:
       tag: ${{ github.ref_name }}

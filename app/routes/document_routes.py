@@ -91,6 +91,7 @@ from app.models import (
     QueryMultipleBody,
 )
 from app.services.vector_store.async_pg_vector import AsyncPgVector
+from app.utils.async_utils import run_in_executor
 from app.utils.document_loader import (
     get_loader,
     clean_text,
@@ -534,7 +535,8 @@ async def delete_documents(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Cache the embedding function with LRU cache
+# Cache query vectors only, never scoped search results. Both cache hits and
+# misses run in the request worker pool so a miss cannot block the event loop.
 @lru_cache(maxsize=128)
 def get_cached_query_embedding(query: str):
     return vector_store.embedding_function.embed_query(query)
@@ -548,7 +550,9 @@ async def query_embeddings_by_file_id(
     scope = resolve_scope(request, body.entity_id)
 
     try:
-        embedding = get_cached_query_embedding(body.query)
+        embedding = await run_in_executor(
+            request.app.state.thread_pool, get_cached_query_embedding, body.query
+        )
         query_filter = scope.predicate(file_clause(body.file_id))
 
         if isinstance(vector_store, AsyncPgVector):
@@ -559,8 +563,12 @@ async def query_embeddings_by_file_id(
                 executor=request.app.state.thread_pool,
             )
         else:
-            documents = vector_store.similarity_search_with_score_by_vector(
-                embedding, k=body.k, filter=query_filter
+            documents = await run_in_executor(
+                request.app.state.thread_pool,
+                vector_store.similarity_search_with_score_by_vector,
+                embedding,
+                k=body.k,
+                filter=query_filter,
             )
 
         return _apply_distance_threshold(documents)
@@ -1460,7 +1468,9 @@ async def query_embeddings_by_file_ids(request: Request, body: QueryMultipleBody
     scope = resolve_scope(request, body.entity_id)
     try:
         # Get the embedding of the query text
-        embedding = get_cached_query_embedding(body.query)
+        embedding = await run_in_executor(
+            request.app.state.thread_pool, get_cached_query_embedding, body.query
+        )
         query_filter = scope.predicate(files_clause(body.file_ids))
 
         # Perform similarity search with the query embedding and filter by the file_ids in metadata
@@ -1472,8 +1482,12 @@ async def query_embeddings_by_file_ids(request: Request, body: QueryMultipleBody
                 executor=request.app.state.thread_pool,
             )
         else:
-            documents = vector_store.similarity_search_with_score_by_vector(
-                embedding, k=body.k, filter=query_filter
+            documents = await run_in_executor(
+                request.app.state.thread_pool,
+                vector_store.similarity_search_with_score_by_vector,
+                embedding,
+                k=body.k,
+                filter=query_filter,
             )
 
         documents = _apply_distance_threshold(documents)

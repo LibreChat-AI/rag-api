@@ -2,6 +2,7 @@ from typing import Callable, Optional, List, Sequence, Tuple, Dict, Any, TypeVar
 import asyncio
 from concurrent.futures import Executor
 from langchain_core.documents import Document
+from app.utils.async_utils import run_in_executor
 from .extended_pg_vector import ExtendedPgVector
 
 T = TypeVar("T")
@@ -28,21 +29,8 @@ class AsyncPgVector(ExtendedPgVector):
         *args: Any,
         **kwargs: Any,
     ) -> T:
-        """Run a sync callable in a thread pool executor.
-
-        Wraps the call to convert StopIteration into RuntimeError.
-        StopIteration cannot be set on an asyncio.Future — it raises
-        TypeError and leaves the Future pending forever.
-        """
-
-        def wrapper() -> T:
-            try:
-                return func(*args, **kwargs)
-            except StopIteration as exc:
-                raise RuntimeError from exc
-
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(executor, wrapper)
+        """Run a sync callable with the shared exception-safe executor bridge."""
+        return await run_in_executor(executor, func, *args, **kwargs)
 
     async def get_all_ids(self, owners: Sequence[str], executor=None) -> list[str]:
         executor = executor or self._get_thread_pool()

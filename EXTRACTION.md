@@ -8,7 +8,8 @@ its vector store and embeddings at startup**. A parsing-only deployment remains 
 separate migration.
 
 Install the pinned optional engine in a custom image or Python environment,
-then opt in explicitly:
+then opt in explicitly before starting (or restarting) the API. With the flag
+off, the route is not registered and does not parse multipart bodies:
 
 ```sh
 pip install -r requirements.extraction.txt

@@ -3,6 +3,7 @@
 import asyncio
 import io
 import os
+import subprocess
 import sys
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -11,11 +12,16 @@ from pathlib import Path
 import httpx
 import jwt
 import pytest
-from fastapi import HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 
+from app.middleware import security_middleware
 from app.routes import extraction_routes
 from app.services import extraction, extraction_worker
-from main import app
+from main import app as main_app
+
+app = FastAPI()
+app.middleware("http")(security_middleware)
+app.include_router(extraction_routes.router)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "structured.docx"
 DOCX_TYPE = extraction_routes.DOCX_TYPE
@@ -29,7 +35,7 @@ def configured(monkeypatch, tmp_path):
     admission = extraction.ExtractionAdmission()
     monkeypatch.setattr(extraction_routes, "_admission", admission)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        monkeypatch.setattr(app.state, "thread_pool", pool, raising=False)
+        monkeypatch.setattr(main_app.state, "thread_pool", pool, raising=False)
         yield tmp_path, admission
 
 
@@ -102,6 +108,34 @@ async def test_embedded_image_cannot_claim_complete_text(headers, configured):
     assert response.json()["may_omit_content"] is True
     assert response.json()["pages_needing_ocr"] == []
     assert not list(configured[0].iterdir())
+
+
+def test_real_app_registers_route_only_when_enabled():
+    # A fresh process verifies main.py registration, not just the test router.
+    script = (
+        "from langchain_community.vectorstores.pgvector import PGVector\n"
+        "from app.services.vector_store.async_pg_vector import AsyncPgVector\n"
+        "PGVector.__post_init__ = lambda self: None\n"
+        "AsyncPgVector.__post_init__ = lambda self: None\n"
+        "from main import app\n"
+        "import sys\n"
+        "print(int(any(getattr(r, 'path', None) == '/v1/extract' for r in app.routes)), "
+        "int('anydoc' in sys.modules))\n"
+    )
+    for enabled, expected in (("false", "0 0"), ("true", "1 0")):
+        env = {
+            **os.environ,
+            "RAG_EXTRACTION_API_ENABLED": enabled,
+            "OPENAI_API_KEY": "test_key",
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip().splitlines()[-1] == expected, result.stderr
 
 
 async def test_disabled_requires_explicit_opt_in(headers, configured, monkeypatch):
@@ -347,7 +381,7 @@ async def test_busy_parser_refuses_before_staging_anything(
 
 async def test_existing_text_endpoint_still_preserves_raw_markdown(headers, configured):
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=main_app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/text",

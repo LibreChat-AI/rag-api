@@ -90,7 +90,13 @@ app.state.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
 
 # Include routers
 app.include_router(document_routes.router)
-app.include_router(extraction_routes.router)
+if os.getenv("RAG_EXTRACTION_API_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    app.include_router(extraction_routes.router)
 if debug_mode:
     app.include_router(router=pgvector_routes.router)
 

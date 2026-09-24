@@ -1,0 +1,3 @@
+# Optional document-v1 extraction engine; install only when enabling /v1/extract.
+# Match LibreChat AnyDoc PR #14701 (Node @firecrawl/anydoc 0.1.3) for corpus parity.
+firecrawl-anydoc==0.1.3

@@ -157,7 +157,7 @@ The following environment variables are required to run the application:
 - `RAG_OPENAI_API_KEY`: The API key for OpenAI API Embeddings (if using default settings).
     - Note: `OPENAI_API_KEY` will work but `RAG_OPENAI_API_KEY` will override it in order to not conflict with LibreChat setting.
 - `RAG_OPENAI_BASEURL`: (Optional) The base URL for your OpenAI API Embeddings
-- `RAG_OPENAI_PROXY`: (Optional) Proxy for OpenAI API Embeddings
+- `RAG_OPENAI_PROXY`: (Optional) Proxy for OpenAI API Embeddings (supports `http://`, `https://`, and `socks5://`/`socks5h://` schemes)
     - Note: When using with LibreChat, you can also set `HTTP_PROXY` and `HTTPS_PROXY` environment variables in the `docker-compose.override.yml` file (see [Proxy Configuration](#proxy-configuration) section below)
 - `VECTOR_DB_TYPE`: (Optional) select vector database type, default to `pgvector`.
 - `POSTGRES_USE_UNIX_SOCKET`: (Optional) Set to "True" when connecting to the PostgreSQL database server with Unix Socket.

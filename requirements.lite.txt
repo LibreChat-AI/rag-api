@@ -2,6 +2,7 @@ langchain==1.3.10
 langchain-community==0.4.2
 langchain-openai==1.3.2
 langchain-core==1.4.8
+httpx[socks]>=0.27.0
 langchain-google-genai==4.2.5
 sqlalchemy==2.0.41
 python-dotenv==1.2.2

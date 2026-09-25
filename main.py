@@ -23,7 +23,7 @@ from app.config import (
     vector_store,
 )
 from app.middleware import security_middleware
-from app.routes import document_routes, pgvector_routes
+from app.routes import document_routes, extraction_routes, pgvector_routes
 from app.services.database import PSQLDatabase, ensure_vector_indexes
 from app.services.vector_store.factory import close_vector_store_connections
 
@@ -90,6 +90,13 @@ app.state.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
 
 # Include routers
 app.include_router(document_routes.router)
+if os.getenv("RAG_EXTRACTION_API_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    app.include_router(extraction_routes.router)
 if debug_mode:
     app.include_router(router=pgvector_routes.router)
 

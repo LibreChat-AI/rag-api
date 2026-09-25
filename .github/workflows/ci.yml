@@ -31,6 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r test_requirements.txt
+          pip install -r requirements.extraction.txt
 
       - name: Run unit tests
         env:

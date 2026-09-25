@@ -39,3 +39,4 @@ pydantic>=2.10.6,<3
 chardet==5.2.0
 tenacity>=9.0.0
 msoffcrypto-tool>=6.0.0,<7
+requests>=2.31.0,<3

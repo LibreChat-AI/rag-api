@@ -9,7 +9,15 @@ import chardet
 
 from langchain_core.documents import Document
 
-from app.config import known_source_ext, PDF_EXTRACT_IMAGES, CHUNK_OVERLAP, logger
+from app.config import (
+    known_source_ext,
+    PDF_EXTRACT_IMAGES,
+    CHUNK_OVERLAP,
+    PRE_EXTRACTION_WEBHOOK_URL,
+    PRE_EXTRACTION_WEBHOOK_MIN_CHARS,
+    PRE_EXTRACTION_WEBHOOK_TIMEOUT,
+    logger,
+)
 from langchain_community.document_loaders import (
     TextLoader,
     PyPDFLoader,
@@ -214,6 +222,83 @@ def remove_non_utf8(text: str) -> str:
         return text.encode("utf-8", "ignore").decode("utf-8")
     except UnicodeError:
         return text
+
+
+def maybe_enrich_with_webhook(
+    file_path: str, documents: List[Document]
+) -> List[Document]:
+    """
+    Optional hook: when PRE_EXTRACTION_WEBHOOK_URL is set and the current
+    extraction returned pages averaging fewer than
+    PRE_EXTRACTION_WEBHOOK_MIN_CHARS characters, POST the original file to the
+    webhook and substitute its returned text. On any failure the original
+    documents are returned unchanged (soft-fail by design).
+    """
+    url = PRE_EXTRACTION_WEBHOOK_URL
+    if not url:
+        return documents
+
+    # Compute average characters per extracted page; empty list counts as 0.
+    if documents:
+        avg_chars = sum(
+            len((doc.page_content or "").strip()) for doc in documents
+        ) / len(documents)
+    else:
+        avg_chars = 0
+
+    if avg_chars >= PRE_EXTRACTION_WEBHOOK_MIN_CHARS:
+        return documents
+
+    # Import lazily so module import works in environments without `requests`
+    # (e.g. test collection phase when the feature is disabled).
+    import requests
+
+    try:
+        with open(file_path, "rb") as f:
+            response = requests.post(
+                url,
+                files={"file": (os.path.basename(file_path), f)},
+                timeout=PRE_EXTRACTION_WEBHOOK_TIMEOUT,
+            )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:  # broad by intent — never break ingest
+        logger.warning(
+            "pre-extraction webhook failed, falling back to original text: %s", exc
+        )
+        return documents
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        logger.warning(
+            "pre-extraction webhook returned empty text, keeping original extraction"
+        )
+        return documents
+
+    provider = payload.get("provider", "unknown")
+    source = (
+        documents[0].metadata.get("source")
+        if documents and isinstance(documents[0].metadata, dict)
+        else file_path
+    )
+
+    logger.info(
+        "pre-extraction webhook enriched %s with %d chars from provider %s",
+        file_path,
+        len(text),
+        provider,
+    )
+
+    return [
+        Document(
+            page_content=text,
+            metadata={
+                "source": source,
+                "ocr_used": True,
+                "ocr_provider": provider,
+            },
+        )
+    ]
 
 
 def process_documents(documents: List[Document]) -> str:

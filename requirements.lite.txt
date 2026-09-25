@@ -35,3 +35,4 @@ chardet==5.2.0
 langchain-ollama==1.1.0
 tenacity>=9.0.0
 msoffcrypto-tool>=6.0.0,<7
+requests>=2.31.0,<3

@@ -102,6 +102,19 @@ EMBEDDING_MAX_QUEUE_SIZE = int(get_env_variable("EMBEDDING_MAX_QUEUE_SIZE", "3")
 env_value = get_env_variable("PDF_EXTRACT_IMAGES", "False").lower()
 PDF_EXTRACT_IMAGES = True if env_value == "true" else False
 
+# Optional pre-extraction webhook: when text extraction returns pages averaging
+# fewer than PRE_EXTRACTION_WEBHOOK_MIN_CHARS characters, the file is POSTed to
+# PRE_EXTRACTION_WEBHOOK_URL. The webhook is expected to respond with
+# `{"text": "...", "provider": "..."}` and that text replaces the original
+# extraction. Disabled when the URL is empty (the default).
+PRE_EXTRACTION_WEBHOOK_URL = get_env_variable("PRE_EXTRACTION_WEBHOOK_URL", "")
+PRE_EXTRACTION_WEBHOOK_MIN_CHARS = int(
+    get_env_variable("PRE_EXTRACTION_WEBHOOK_MIN_CHARS", "100")
+)
+PRE_EXTRACTION_WEBHOOK_TIMEOUT = int(
+    get_env_variable("PRE_EXTRACTION_WEBHOOK_TIMEOUT", "60")
+)
+
 if POSTGRES_USE_UNIX_SOCKET:
     connection_suffix = f"{urllib.parse.quote_plus(POSTGRES_USER)}:{urllib.parse.quote_plus(POSTGRES_PASSWORD)}@/{urllib.parse.quote_plus(POSTGRES_DB)}?host={urllib.parse.quote_plus(DB_HOST)}"
 else:

@@ -97,6 +97,7 @@ from app.utils.document_loader import (
     clean_text,
     process_documents,
     cleanup_temp_encoding_file,
+    maybe_enrich_with_webhook,
 )
 from app.utils.health import is_health_ok
 
@@ -355,6 +356,11 @@ async def load_file_content(
         )
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(executor, lambda: list(loader.lazy_load()))
+        # Optional pre-extraction webhook (e.g. OCR sidecar) — no-op when
+        # PRE_EXTRACTION_WEBHOOK_URL is unset.
+        data = await loop.run_in_executor(
+            executor, maybe_enrich_with_webhook, file_path, data
+        )
         return data, known_type, file_ext
     finally:
         # Clean up temporary UTF-8 file if it was created for encoding conversion
@@ -1133,6 +1139,12 @@ async def embed_local_file(
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(
             request.app.state.thread_pool, lambda: list(loader.lazy_load())
+        )
+        data = await loop.run_in_executor(
+            request.app.state.thread_pool,
+            maybe_enrich_with_webhook,
+            file_path,
+            data,
         )
 
         result = await store_data_in_vector_db(

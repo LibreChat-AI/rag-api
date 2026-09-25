@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.utils.document_loader import get_loader, clean_text, process_documents
+from app.utils.document_loader import (
+    get_loader,
+    clean_text,
+    process_documents,
+    detect_file_encoding,
+)
 from langchain_community.document_loaders import (
     TextLoader,
     UnstructuredMarkdownLoader,
@@ -278,3 +283,93 @@ def test_get_loader_raw_text_respects_binary_extensions_over_markdown_mime(
     )
 
     assert type(loader).__name__ == expected_loader_name
+
+
+# ==================== Encoding Detection Tests ====================
+
+
+def test_detect_file_encoding_utf8(tmp_path):
+    """UTF-8 file should be detected correctly."""
+    file_path = tmp_path / "test.csv"
+    file_path.write_text("name,age\nAlice,30\nBob,25", encoding="utf-8")
+    assert detect_file_encoding(str(file_path)) == "utf-8"
+
+
+def test_detect_file_encoding_utf8_bom(tmp_path):
+    """UTF-8 with BOM should be detected as utf-8-sig."""
+    file_path = tmp_path / "test.csv"
+    file_path.write_bytes(b"\xef\xbb\xbfname,age\nAlice,30")
+    assert detect_file_encoding(str(file_path)) == "utf-8-sig"
+
+
+def test_detect_file_encoding_utf16_le(tmp_path):
+    """UTF-16 LE with BOM should be detected correctly."""
+    file_path = tmp_path / "test.csv"
+    content = "name,age\nAlice,30".encode("utf-16-le")
+    file_path.write_bytes(b"\xff\xfe" + content)
+    assert detect_file_encoding(str(file_path)) == "utf-16-le"
+
+
+def test_detect_file_encoding_shift_jis(tmp_path):
+    """Shift-JIS file with ASCII headers and Japanese data should be detected."""
+    # Simulate a CSV with English headers and Japanese data rows
+    # This is the exact scenario from issue #291
+    header = b"name,city\n"
+    # Japanese text in Shift-JIS: "Tokyo" = "東京" = 8b 93 8b 5f
+    japanese_data = b"Alice,\x8b\x93\x8b\x5f\nBob,Osaka\n"
+    file_path = tmp_path / "test.csv"
+    file_path.write_bytes(header + japanese_data * 100)  # Repeat for enough sample
+
+    encoding = detect_file_encoding(str(file_path))
+    # Should detect as cp932/shift_jis, NOT utf-8
+    assert encoding in ["cp932", "shift_jis", "shift_jisx0213"], (
+        f"Expected Shift-JIS variant, got: {encoding}"
+    )
+
+
+def test_detect_file_encoding_gb18030(tmp_path):
+    """GB18030 file with ASCII headers and Chinese data should be detected."""
+    header = b"name,city\n"
+    # Chinese text in GB18030: "Beijing" = "北京" = b1 b1 be a9
+    chinese_data = b"Alice,\xb1\xb1\xbe\xa9\nBob,Shanghai\n"
+    file_path = tmp_path / "test.csv"
+    file_path.write_bytes(header + chinese_data * 100)
+
+    encoding = detect_file_encoding(str(file_path))
+    # Should detect as gb18030 or gbk, NOT utf-8
+    assert encoding in ["gb18030", "gbk", "gb2312"], (
+        f"Expected GB variant, got: {encoding}"
+    )
+
+
+def test_detect_file_encoding_latin1_fallback(tmp_path):
+    """File with Latin-1 characters should fallback correctly."""
+    header = b"name,city\n"
+    # Latin-1 specific bytes (0x80-0xFF range that's invalid UTF-8)
+    latin1_data = b"Alice,Caf\xe9\nBob,Z\xfc\n"
+    file_path = tmp_path / "test.csv"
+    file_path.write_bytes(header + latin1_data * 100)
+
+    encoding = detect_file_encoding(str(file_path))
+    # Should detect as latin-1 or iso-8859-1
+    assert encoding in ["latin-1", "iso-8859-1", "windows-1252", "ascii"], (
+        f"Expected Latin variant, got: {encoding}"
+    )
+
+
+def test_get_loader_csv_shift_jis(tmp_path):
+    """CSVLoader should handle Shift-JIS files without UnicodeDecodeError."""
+    header = b"name,city\n"
+    # Japanese text in Shift-JIS
+    japanese_data = b"Alice,\x8b\x93\x8b\x5f\nBob,Osaka\n"
+    file_path = tmp_path / "test.csv"
+    file_path.write_bytes(header + japanese_data * 100)
+
+    # This should NOT raise UnicodeDecodeError
+    loader, known_type, file_ext = get_loader("test.csv", "text/csv", str(file_path))
+    assert known_type is True
+    assert file_ext == "csv"
+
+    # Should be able to load without error
+    data = loader.load()
+    assert len(data) > 0

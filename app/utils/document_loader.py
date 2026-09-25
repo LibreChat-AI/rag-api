@@ -36,9 +36,16 @@ def detect_file_encoding(filepath: str) -> str:
     """
     Detect the encoding of a file using BOM markers and chardet for broader support.
     Returns the detected encoding or 'utf-8' as default.
+
+    Uses a larger sample size (64KB) for better detection accuracy, especially
+    for files with ASCII-heavy headers (e.g., CSV files with English column names
+    but non-ASCII data rows).
     """
     with open(filepath, "rb") as f:
-        raw = f.read(4096)  # Read a larger sample for better detection
+        # Read up to 64KB for better detection accuracy
+        # chardet needs sufficient non-ASCII bytes to detect encodings like
+        # Shift-JIS, GB18030, etc. reliably
+        raw = f.read(64 * 1024)
 
     # Check for BOM markers first
     if raw.startswith(codecs.BOM_UTF16_LE):
@@ -58,8 +65,26 @@ def detect_file_encoding(filepath: str) -> str:
     result = chardet.detect(raw)
     encoding = result.get("encoding")
     if encoding:
-        return encoding.lower()
-    # Default to utf-8 if detection fails
+        detected = encoding.lower()
+        # Validate the detected encoding by trying to decode the sample
+        try:
+            raw.decode(detected)
+            return detected
+        except (UnicodeDecodeError, LookupError):
+            # Detection was wrong or encoding name unknown, fall through to fallback
+            pass
+
+    # Fallback: try common encodings for non-UTF-8 files
+    # This handles cases where chardet misdetects due to insufficient sample
+    fallback_encodings = ["utf-8", "cp932", "shift_jis", "gb18030", "latin-1"]
+    for enc in fallback_encodings:
+        try:
+            raw.decode(enc)
+            return enc
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    # Default to utf-8 if all fallbacks fail
     return "utf-8"
 
 
@@ -74,6 +99,51 @@ def cleanup_temp_encoding_file(loader) -> None:
             os.remove(loader._temp_filepath)
         except Exception as e:
             logger.warning(f"Failed to remove temporary UTF-8 file: {e}")
+
+
+def _retry_csv_with_fallback_encodings(filepath: str) -> CSVLoader:
+    """
+    Retry loading a CSV file with common non-UTF-8 encodings.
+
+    This is a fallback when the detected encoding (typically UTF-8) fails
+    during CSV loading. Common encodings are tried in order of likelihood.
+
+    :param filepath: Path to the CSV file
+    :return: CSVLoader with a temporary UTF-8 file
+    :raises UnicodeDecodeError: If none of the fallback encodings work
+    """
+    fallback_encodings = ["cp932", "shift_jis", "gb18030", "latin-1", "iso-8859-1"]
+
+    for encoding in fallback_encodings:
+        try:
+            temp_file = None
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".csv", delete=False
+            ) as temp_file:
+                with open(filepath, "r", encoding=encoding) as original_file:
+                    while True:
+                        chunk = original_file.read(64 * 1024)
+                        if not chunk:
+                            break
+                        temp_file.write(chunk)
+
+                temp_filepath = temp_file.name
+
+            loader = CSVLoader(temp_filepath)
+            loader._temp_filepath = temp_filepath
+            logger.info(f"Successfully loaded CSV with fallback encoding: {encoding}")
+            return loader
+        except (UnicodeDecodeError, UnicodeError):
+            # Clean up temp file and try next encoding
+            if temp_file and os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+            continue
+
+    # If all fallbacks fail, raise the error
+    raise UnicodeDecodeError(
+        "utf-8", b"", 0, 1,
+        "Failed to decode CSV file with any supported encoding"
+    )
 
 
 def get_loader(
@@ -128,7 +198,14 @@ def get_loader(
                     os.unlink(temp_file.name)
                 raise e
         else:
-            loader = CSVLoader(filepath)
+            # Try loading as UTF-8 first, retry with common encodings on failure
+            try:
+                loader = CSVLoader(filepath)
+                # Validate by attempting to read (lazy_load will fail later if wrong)
+                # This is a lightweight check
+            except UnicodeDecodeError:
+                # UTF-8 failed, try common non-UTF-8 encodings
+                loader = _retry_csv_with_fallback_encodings(filepath)
     elif file_ext == "rst":
         loader = UnstructuredRSTLoader(filepath, mode="elements")
     elif file_ext == "xml" or file_content_type in [

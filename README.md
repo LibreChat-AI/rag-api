@@ -235,9 +235,9 @@ EMBEDDINGS_DIMENSIONS=1024       # optional, see EMBEDDINGS_DIMENSIONS above
 VOYAGE_API_KEY=...
 ```
 
-Documents are embedded with `input_type=document` and queries with `input_type=query`. Truncation is disabled, so an input longer than the model context is an error instead of a silently clipped vector. Do not change the model or the dimensions on an existing collection.
+Documents are embedded with `input_type=document` and queries with `input_type=query`. For the non-context models truncation is disabled, so an input longer than the model context is an error instead of a silently clipped vector. The Voyage client downloads each model's tokenizer from huggingface.co on first use, so the container needs egress to it (or a pre-filled Hugging Face cache) in addition to `api.voyageai.com`. Do not change the model or the dimensions on an existing collection.
 
-The `voyage-context-*` models run with auto-chunking (`chunk_size=32000`) in document mode, and query mode without chunking. Every text this API embeds must produce exactly one chunk; if Voyage splits a text into several chunks the request fails instead of storing misaligned vectors (keep `CHUNK_SIZE` well below 32000 tokens).
+The `voyage-context-*` models run with auto-chunking (`chunk_size=32000`) in document mode, and query mode without chunking. Every text this API embeds must produce exactly one chunk; if Voyage splits a text into several chunks the request fails instead of storing misaligned vectors (`CHUNK_SIZE` is measured in characters; keep it well below the 32000-token auto-chunk size).
 
 Make sure to set these environment variables before running the application. You can set them in a `.env` file or as system environment variables.
 

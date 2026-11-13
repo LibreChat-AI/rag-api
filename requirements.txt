@@ -31,6 +31,8 @@ langchain-mongodb==0.11.0
 langchain-ollama==1.1.0
 langchain-huggingface==1.2.2
 langchain-google-genai==4.2.5
+langchain-voyageai==0.4.1
+voyageai==0.6.0
 cryptography==50.0.1
 python-magic==0.4.27
 python-pptx==1.0.2

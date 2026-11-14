@@ -191,7 +191,7 @@ The following environment variables are required to run the application:
 - `DEBUG_RAG_API`: (Optional) Set to "True" to show more verbose logging output in the server console, and to enable postgresql database routes
 - `DEBUG_PGVECTOR_QUERIES`: (Optional) Set to "True" to enable detailed PostgreSQL query logging for pgvector operations. Useful for debugging performance issues with vector database queries.
 - `CONSOLE_JSON`: (Optional) Set to "True" to log as json for Cloud Logging aggregations
-- `EMBEDDINGS_PROVIDER`: (Optional) either "openai", "bedrock", "azure", "huggingface", "huggingfacetei", "google_genai", "vertexai", or "ollama", where "huggingface" uses sentence_transformers; defaults to "openai"
+- `EMBEDDINGS_PROVIDER`: (Optional) either "openai", "bedrock", "azure", "huggingface", "huggingfacetei", "google_genai", "vertexai", "voyage", or "ollama", where "huggingface" uses sentence_transformers; defaults to "openai"
 - `EMBEDDINGS_MODEL`: (Optional) Set a valid embeddings model to use from the configured provider.
     - **Defaults**
     - openai: "text-embedding-3-small"
@@ -202,8 +202,9 @@ The following environment variables are required to run the application:
     - ollama: "nomic-embed-text"
     - bedrock: "amazon.titan-embed-text-v1"
     - google_genai: "gemini-embedding-001"
+    - voyage: **no default, `EMBEDDINGS_MODEL` is required.** Supported models: `voyage-4-large`, `voyage-4`, `voyage-4-lite`, `voyage-code-4`, `voyage-3-large`, `voyage-3.5`, `voyage-3.5-lite`, `voyage-code-3`, `voyage-finance-2`, `voyage-law-2`, and the contextualized `voyage-context-4`, `voyage-context-3`. Any other value stops the app at startup.
 - `EMBEDDINGS_CHUNK_SIZE`: (Optional) The chunk size used by the OpenAI and Azure embeddings clients to limit the number of inputs per request. Default value is `200`.
-- `EMBEDDINGS_DIMENSIONS`: (Optional) Output vector size to request from the embedding model. Only honored by the `openai` and `azure` providers, and only supported by `text-embedding-3-*` models. Leave unset to use the model's native dimensionality (1536 for `text-embedding-3-small`, 3072 for `text-embedding-3-large`). Setting a smaller value (e.g. `512`, `1024`) trades some retrieval quality for lower storage cost and faster similarity search. Note: do not change this on an existing collection — all vectors in a `pgvector` column must share the same dimensionality.
+- `EMBEDDINGS_DIMENSIONS`: (Optional) Output vector size to request from the embedding model. Only honored by the `openai`, `azure` and `voyage` providers. For OpenAI/Azure it is only supported by `text-embedding-3-*` models; for Voyage it must be one of `256`, `512`, `1024`, `2048` (`voyage-finance-2` and `voyage-law-2` only support `1024`), and when unset the model default of `1024` is used. Leave unset to use the model's native dimensionality (1536 for `text-embedding-3-small`, 3072 for `text-embedding-3-large`). Setting a smaller value (e.g. `512`, `1024`) trades some retrieval quality for lower storage cost and faster similarity search. Note: do not change this on an existing collection — all vectors in a `pgvector` column must share the same dimensionality.
 - `RAG_AZURE_OPENAI_API_VERSION`: (Optional) Default is `2023-05-15`. The version of the Azure OpenAI API.
 - `RAG_AZURE_OPENAI_API_KEY`: (Optional) The API key for Azure OpenAI service.
     - Note: `AZURE_OPENAI_API_KEY` will work but `RAG_AZURE_OPENAI_API_KEY` will override it in order to not conflict with LibreChat setting.
@@ -218,11 +219,25 @@ The following environment variables are required to run the application:
 - `AWS_ACCESS_KEY_ID`: (Optional) needed for bedrock embeddings
 - `AWS_SECRET_ACCESS_KEY`: (Optional) needed for bedrock embeddings
 - `GOOGLE_API_KEY`, `GOOGLE_KEY`, `RAG_GOOGLE_API_KEY`: (Optional) Google API key for Google GenAI embeddings. Priority order: RAG_GOOGLE_API_KEY > GOOGLE_KEY > GOOGLE_API_KEY
+- `VOYAGE_API_KEY`, `RAG_VOYAGE_API_KEY`: Voyage AI API key, required for the `voyage` embeddings provider. `RAG_VOYAGE_API_KEY` overrides `VOYAGE_API_KEY`.
 - `AWS_SESSION_TOKEN`: (Optional) may be needed for bedrock embeddings
 - `GOOGLE_APPLICATION_CREDENTIALS`: (Optional) needed for Google VertexAI embeddings. This should be a path to a service account credential file in JSON format.
 - `GOOGLE_CLOUD_PROJECT`: (Optional) Google Cloud project ID, needed for VertexAI embeddings.
 - `GOOGLE_CLOUD_LOCATION`: (Optional) Google Cloud region for VertexAI embeddings. Defaults to `us-central1`.
 - `RAG_CHECK_EMBEDDING_CTX_LENGTH` (Optional) Default is true, disabling this will send raw input to the embedder, use this for custom embedding models.
+
+#### Voyage AI embeddings
+
+```bash
+EMBEDDINGS_PROVIDER=voyage
+EMBEDDINGS_MODEL=voyage-4-lite   # required, no default
+EMBEDDINGS_DIMENSIONS=1024       # optional, see EMBEDDINGS_DIMENSIONS above
+VOYAGE_API_KEY=...
+```
+
+Documents are embedded with `input_type=document` and queries with `input_type=query`. For the non-context models truncation is disabled, so an input longer than the model context is an error instead of a silently clipped vector. The Voyage client downloads each model's tokenizer from huggingface.co on first use, so the container needs egress to it (or a pre-filled Hugging Face cache) in addition to `api.voyageai.com`. Do not change the model or the dimensions on an existing collection.
+
+The `voyage-context-*` models run with auto-chunking (`chunk_size=32000`) in document mode, and query mode without chunking. Every text this API embeds must produce exactly one chunk; if Voyage splits a text into several chunks the request fails instead of storing misaligned vectors (`CHUNK_SIZE` is measured in characters; keep it well below the 32000-token auto-chunk size).
 
 Make sure to set these environment variables before running the application. You can set them in a `.env` file or as system environment variables.
 

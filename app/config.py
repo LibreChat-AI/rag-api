@@ -28,6 +28,7 @@ class EmbeddingsProvider(Enum):
     BEDROCK = "bedrock"
     GOOGLE_GENAI = "google_genai"
     GOOGLE_VERTEXAI = "vertexai"
+    VOYAGE = "voyage"
 
 
 def get_env_variable(
@@ -219,6 +220,8 @@ AWS_SECRET_ACCESS_KEY = get_env_variable("AWS_SECRET_ACCESS_KEY", "")
 GOOGLE_API_KEY = get_env_variable("GOOGLE_API_KEY", "")
 GOOGLE_KEY = get_env_variable("GOOGLE_KEY", GOOGLE_API_KEY)
 RAG_GOOGLE_API_KEY = get_env_variable("RAG_GOOGLE_API_KEY", GOOGLE_KEY)
+VOYAGE_API_KEY = get_env_variable("VOYAGE_API_KEY", "")
+RAG_VOYAGE_API_KEY = get_env_variable("RAG_VOYAGE_API_KEY", VOYAGE_API_KEY)
 AWS_SESSION_TOKEN = get_env_variable("AWS_SESSION_TOKEN", "")
 GOOGLE_APPLICATION_CREDENTIALS = get_env_variable("GOOGLE_APPLICATION_CREDENTIALS", "")
 env_value = get_env_variable("RAG_CHECK_EMBEDDING_CTX_LENGTH", "True").lower()
@@ -297,6 +300,12 @@ def init_embeddings(provider, model, dimensions=None):
             project=get_env_variable("GOOGLE_CLOUD_PROJECT", None),
             location=get_env_variable("GOOGLE_CLOUD_LOCATION", "us-central1"),
         )
+    elif provider == EmbeddingsProvider.VOYAGE:
+        from app.services.voyage_embeddings import init_voyage_embeddings
+
+        return init_voyage_embeddings(
+            model=model, api_key=RAG_VOYAGE_API_KEY, dimensions=dimensions
+        )
     elif provider == EmbeddingsProvider.BEDROCK:
         from langchain_aws import BedrockEmbeddings
 
@@ -323,14 +332,18 @@ EMBEDDINGS_PROVIDER = EmbeddingsProvider(
     get_env_variable("EMBEDDINGS_PROVIDER", EmbeddingsProvider.OPENAI.value).lower()
 )
 
-# Only parse EMBEDDINGS_DIMENSIONS for providers that honor it (OpenAI / Azure).
+# Only parse EMBEDDINGS_DIMENSIONS for providers that honor it (OpenAI / Azure / Voyage).
 # Parsing unconditionally at import would turn an unrelated stale env var
 # (e.g. EMBEDDINGS_DIMENSIONS=foo left over from an OpenAI deployment) into a
 # hard boot failure under bedrock / hf / ollama / etc., even though those
 # providers silently ignore the value.
 EMBEDDINGS_DIMENSIONS = None
 
-if EMBEDDINGS_PROVIDER in (EmbeddingsProvider.OPENAI, EmbeddingsProvider.AZURE):
+if EMBEDDINGS_PROVIDER in (
+    EmbeddingsProvider.OPENAI,
+    EmbeddingsProvider.AZURE,
+    EmbeddingsProvider.VOYAGE,
+):
     _embeddings_dimensions_raw = get_env_variable("EMBEDDINGS_DIMENSIONS", None)
     if _embeddings_dimensions_raw not in (None, ""):
         EMBEDDINGS_DIMENSIONS = int(_embeddings_dimensions_raw)
@@ -357,6 +370,10 @@ elif EMBEDDINGS_PROVIDER == EmbeddingsProvider.OLLAMA:
     EMBEDDINGS_MODEL = get_env_variable("EMBEDDINGS_MODEL", "nomic-embed-text")
 elif EMBEDDINGS_PROVIDER == EmbeddingsProvider.GOOGLE_GENAI:
     EMBEDDINGS_MODEL = get_env_variable("EMBEDDINGS_MODEL", "gemini-embedding-001")
+elif EMBEDDINGS_PROVIDER == EmbeddingsProvider.VOYAGE:
+    # No default model: it is validated against the supported Voyage models in
+    # app.services.voyage_embeddings and the app refuses to start without one.
+    EMBEDDINGS_MODEL = get_env_variable("EMBEDDINGS_MODEL", None)
 elif EMBEDDINGS_PROVIDER == EmbeddingsProvider.BEDROCK:
     EMBEDDINGS_MODEL = get_env_variable(
         "EMBEDDINGS_MODEL", "amazon.titan-embed-text-v1"

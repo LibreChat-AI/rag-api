@@ -4,15 +4,14 @@ import os
 import codecs
 import tempfile
 
-from typing import Iterator, List, Optional
+from typing import List, Optional
 import chardet
 
 from langchain_core.documents import Document
 
-from app.config import known_source_ext, PDF_EXTRACT_IMAGES, CHUNK_OVERLAP, logger
+from app.config import known_source_ext, CHUNK_OVERLAP, logger
 from langchain_community.document_loaders import (
     TextLoader,
-    PyPDFLoader,
     CSVLoader,
     Docx2txtLoader,
     UnstructuredEPubLoader,
@@ -30,6 +29,18 @@ from langchain_community.document_loaders import (
 _BINARY_FILE_EXTENSIONS = frozenset(
     {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "epub"}
 )
+
+
+def extraction_format(filename: str, content_type: str) -> Optional[str]:
+    """Identify migrated formats independently of text/Markdown MIME overrides."""
+    extension = filename.rsplit(".", 1)[-1].lower()
+    if extension == "pdf" or content_type == "application/pdf":
+        return "pdf"
+    if extension == "docx" or content_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ):
+        return "docx"
+    return None
 
 
 def detect_file_encoding(filepath: str) -> str:
@@ -82,7 +93,7 @@ def get_loader(
     filepath: str,
     raw_text: bool = False,
 ):
-    """Get the appropriate document loader based on file type and\or content type.
+    """Get the appropriate document loader based on file type and/or content type.
 
     When ``raw_text`` is True, text-formatted files (e.g. Markdown) are loaded
     verbatim with :class:`TextLoader` so their original formatting is
@@ -91,14 +102,14 @@ def get_loader(
     (``raw_text=False``) so semantic loaders continue to strip formatting for
     better vector search quality.
     """
+    if extraction_format(filename, file_content_type) is not None:
+        raise ValueError("PDF/DOCX require the asynchronous extraction service")
     file_ext = filename.split(".")[-1].lower()
     known_type = True
 
     # File Content Type reference:
     # ref.: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types/Common_types
-    if file_ext == "pdf" or file_content_type == "application/pdf":
-        loader = SafePyPDFLoader(filepath, extract_images=PDF_EXTRACT_IMAGES)
-    elif file_ext == "csv" or file_content_type == "text/csv":
+    if file_ext == "csv" or file_content_type == "text/csv":
         # Detect encoding for CSV files
         encoding = detect_file_encoding(filepath)
 
@@ -158,10 +169,7 @@ def get_loader(
             loader = UnstructuredMarkdownLoader(filepath)
     elif file_ext == "epub" or file_content_type == "application/epub+zip":
         loader = UnstructuredEPubLoader(filepath)
-    elif file_ext in ["doc", "docx"] or file_content_type in [
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ]:
+    elif file_ext == "doc" or file_content_type == "application/msword":
         loader = Docx2txtLoader(filepath)
     elif file_ext in ["xls", "xlsx"] or file_content_type in [
         "application/vnd.ms-excel",
@@ -241,52 +249,3 @@ def process_documents(documents: List[Document]) -> str:
             processed_text += new_content
 
     return processed_text.strip()
-
-
-class SafePyPDFLoader:
-    """
-    A wrapper around PyPDFLoader that handles image extraction failures gracefully.
-    Falls back to text-only extraction when image extraction fails.
-
-    This is a workaround for issues with PyPDFLoader that can occur when extracting images
-    from PDFs, which can lead to KeyError exceptions if the PDF is malformed or has unsupported
-    image formats. This class attempts to load the PDF with image extraction enabled, and if it
-    fails due to a KeyError related to image filters, it falls back to loading the PDF
-    without image extraction.
-    ref.: https://github.com/langchain-ai/langchain/issues/26652
-    """
-
-    def __init__(self, filepath: str, extract_images: bool = False):
-        self.filepath = filepath
-        self.extract_images = extract_images
-        self._temp_filepath = None  # For compatibility with cleanup function
-
-    def lazy_load(self) -> Iterator[Document]:
-        """Lazy load PDF documents with automatic fallback on image extraction errors."""
-        loader = PyPDFLoader(self.filepath, extract_images=self.extract_images)
-
-        if not self.extract_images:
-            # No image extraction: no fallback needed, stream directly
-            yield from loader.lazy_load()
-            return
-
-        # extract_images=True: must collect eagerly so that a mid-stream
-        # KeyError doesn't leave already-yielded pages duplicated by the
-        # fallback (yield from + try/except would deliver partial + full).
-        try:
-            pages = list(loader.lazy_load())
-        except KeyError as e:
-            if "/Filter" in str(e):
-                logger.warning(
-                    f"PDF image extraction failed for {self.filepath}, falling back to text-only: {e}"
-                )
-                fallback_loader = PyPDFLoader(self.filepath, extract_images=False)
-                pages = list(fallback_loader.lazy_load())
-            else:
-                # Re-raise if it's a different error
-                raise
-        yield from pages
-
-    def load(self) -> List[Document]:
-        """Load PDF documents with automatic fallback on image extraction errors."""
-        return list(self.lazy_load())

@@ -4,7 +4,7 @@ Tests for lazy_load() across all supported document loaders.
 Verifies that every loader returned by get_loader() supports lazy_load(),
 returns a generator/iterator, and yields valid Document objects with content.
 Also includes memory benchmarks comparing lazy_load() vs load() to document
-which loaders benefit from streaming (CSV, PDF) vs which don't (Unstructured*).
+which local loaders benefit from streaming (CSV) vs which don't (Unstructured*).
 """
 
 import gc
@@ -12,12 +12,11 @@ import os
 import shutil
 import tracemalloc
 import zipfile
-from collections.abc import Iterator
 
 import pytest
 from langchain_core.documents import Document
 
-from app.utils.document_loader import get_loader, SafePyPDFLoader
+from app.utils.document_loader import get_loader
 
 # ---------------------------------------------------------------------------
 # Environment checks — these deps aren't guaranteed in every CI runner
@@ -49,85 +48,6 @@ _skip_no_msoffcrypto = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Fixture helpers for generating test files in each format
 # ---------------------------------------------------------------------------
-
-
-def _make_pdf(path, *, num_pages=1):
-    """Create a PDF with extractable text using pypdf.
-
-    When *num_pages* > 1 each page gets unique text so tracemalloc can
-    observe the difference between holding 1 page vs N pages in memory.
-    """
-    from pypdf import PdfWriter
-    from pypdf.generic import (
-        DecodedStreamObject,
-        DictionaryObject,
-        NameObject,
-    )
-
-    writer = PdfWriter()
-    for i in range(num_pages):
-        writer.add_blank_page(width=612, height=792)
-        page = writer.pages[i]
-
-        font_dict = DictionaryObject()
-        font_dict[NameObject("/Type")] = NameObject("/Font")
-        font_dict[NameObject("/Subtype")] = NameObject("/Type1")
-        font_dict[NameObject("/BaseFont")] = NameObject("/Helvetica")
-
-        resources = DictionaryObject()
-        font_resources = DictionaryObject()
-        font_resources[NameObject("/F1")] = font_dict
-        resources[NameObject("/Font")] = font_resources
-        page[NameObject("/Resources")] = resources
-
-        # Pad each page with unique filler so memory differences are measurable
-        filler = f"PAGE {i} " + ("X" * 2000)
-        content = f"BT /F1 12 Tf 100 700 Td ({filler}) Tj ET".encode()
-        stream = DecodedStreamObject()
-        stream.set_data(content)
-        page[NameObject("/Contents")] = stream
-
-    with open(path, "wb") as f:
-        writer.write(f)
-
-
-def _make_docx(path):
-    """Create a minimal DOCX (Office Open XML zip) with text content."""
-    content_types = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-        '  <Default Extension="xml" ContentType="application/xml"/>'
-        '  <Override PartName="/word/document.xml"'
-        '   ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-        "</Types>"
-    )
-    rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '  <Relationship Id="rId1"'
-        '   Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"'
-        '   Target="word/document.xml"/>'
-        "</Relationships>"
-    )
-    document = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        "  <w:body>"
-        "    <w:p><w:r><w:t>Hello from lazy_load DOCX test</w:t></w:r></w:p>"
-        "  </w:body>"
-        "</w:document>"
-    )
-    word_rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        "</Relationships>"
-    )
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", content_types)
-        z.writestr("_rels/.rels", rels)
-        z.writestr("word/document.xml", document)
-        z.writestr("word/_rels/document.xml.rels", word_rels)
 
 
 def _make_xlsx(path):
@@ -283,14 +203,6 @@ LOADER_CASES = [
         "Hello from lazy_load PY test",
         id="py-source",
     ),
-    pytest.param("test.pdf", "application/pdf", _make_pdf, "PAGE 0", id="pdf"),
-    pytest.param(
-        "test.docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        _make_docx,
-        "lazy_load DOCX test",
-        id="docx",
-    ),
     pytest.param(
         "test.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -384,41 +296,6 @@ def test_lazy_load_matches_load(
 
 
 # ---------------------------------------------------------------------------
-# SafePyPDFLoader-specific tests
-# ---------------------------------------------------------------------------
-
-
-def test_safe_pdf_loader_lazy_load_is_iterator(tmp_path):
-    """SafePyPDFLoader.lazy_load() should return an Iterator."""
-    pdf_path = tmp_path / "gen_test.pdf"
-    _make_pdf(str(pdf_path))
-
-    loader = SafePyPDFLoader(str(pdf_path), extract_images=False)
-    result = loader.lazy_load()
-    assert isinstance(result, Iterator)
-
-    # Consuming the iterator should yield documents
-    docs = list(result)
-    assert len(docs) > 0
-
-
-def test_safe_pdf_loader_load_delegates_to_lazy_load(tmp_path):
-    """SafePyPDFLoader.load() should produce the same results as list(lazy_load())."""
-    pdf_path = tmp_path / "delegate_test.pdf"
-    _make_pdf(str(pdf_path))
-
-    loader1 = SafePyPDFLoader(str(pdf_path), extract_images=False)
-    loader2 = SafePyPDFLoader(str(pdf_path), extract_images=False)
-
-    load_docs = loader1.load()
-    lazy_docs = list(loader2.lazy_load())
-
-    assert len(load_docs) == len(lazy_docs)
-    for ld, lz in zip(load_docs, lazy_docs):
-        assert ld.page_content == lz.page_content
-
-
-# ---------------------------------------------------------------------------
 # CSV with non-UTF-8 encoding
 # ---------------------------------------------------------------------------
 
@@ -486,37 +363,6 @@ def _measure_lazy_load_streaming(loader_factory):
     return texts, peak
 
 
-class TestMemoryBenchmarkPDF:
-    """Memory comparison for PyPDFLoader -- the loader most likely to benefit
-    from lazy_load() since it yields page-by-page."""
-
-    NUM_PAGES = 50
-
-    @pytest.fixture()
-    def pdf_path(self, tmp_path):
-        path = tmp_path / "bench.pdf"
-        _make_pdf(str(path), num_pages=self.NUM_PAGES)
-        return str(path)
-
-    def test_pdf_streaming_lazy_load_peak_memory(self, pdf_path):
-        """Streaming lazy_load() should use <= peak memory vs load()."""
-
-        def factory():
-            return SafePyPDFLoader(pdf_path, extract_images=False)
-
-        load_docs, peak_load = _measure_load(factory)
-        texts, peak_lazy_stream = _measure_lazy_load_streaming(factory)
-
-        assert len(load_docs) == self.NUM_PAGES
-        assert len(texts) == self.NUM_PAGES
-
-        # Streaming should not use MORE memory than eager (allow 10% noise)
-        assert peak_lazy_stream <= peak_load * 1.10, (
-            f"streaming peak ({peak_lazy_stream:,} B) exceeded "
-            f"load() peak ({peak_load:,} B) by >10%"
-        )
-
-
 class TestMemoryBenchmarkCSV:
     """Memory comparison for CSVLoader -- yields one Document per row."""
 
@@ -571,11 +417,6 @@ UNSTRUCTURED_CASES = [
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         id="pptx",
     ),
-    pytest.param(
-        "test.docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        id="docx",
-    ),
 ]
 
 # Map extensions to their file creators
@@ -595,7 +436,6 @@ _UNSTRUCTURED_CREATORS = {
     ".epub": lambda p: _make_epub(p),
     ".xlsx": lambda p: _make_xlsx(p),
     ".pptx": lambda p: _make_pptx(p),
-    ".docx": lambda p: _make_docx(p),
 }
 
 

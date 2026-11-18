@@ -7,8 +7,12 @@ import hashlib
 import traceback
 import aiofiles
 import aiofiles.os
+from anyio import CancelScope
 import asyncio
 import time
+import inspect
+from contextvars import ContextVar
+from threading import Lock
 from shutil import copyfileobj
 from typing import List, Iterable, Optional, Union, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +29,7 @@ from fastapi import (
 )
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from functools import lru_cache
+from functools import lru_cache, wraps
 
 if TYPE_CHECKING:
     from app.services.vector_store.async_pg_vector import AsyncPgVector
@@ -44,8 +48,11 @@ from app.config import (
     EMBEDDING_MAX_QUEUE_SIZE,
     PARALLEL_EXECUTION,
     RAG_DISTANCE_THRESHOLD,
+    EXTRACTION_SETTINGS,
+    PDF_EXTRACT_IMAGES,
 )
 from app.scope import file_clause, files_clause, resolve_scope
+from app.services.extraction_client import ExtractionClient, ExtractionError
 
 # Warn once at import time if the user set a threshold under Atlas, where
 # the score direction is inverted (Atlas vectorSearchScore: higher = better)
@@ -94,6 +101,7 @@ from app.services.vector_store.async_pg_vector import AsyncPgVector
 from app.utils.async_utils import run_in_executor
 from app.utils.document_loader import (
     get_loader,
+    extraction_format,
     clean_text,
     process_documents,
     cleanup_temp_encoding_file,
@@ -101,6 +109,7 @@ from app.utils.document_loader import (
 from app.utils.health import is_health_ok
 
 router = APIRouter()
+extraction_client = ExtractionClient(EXTRACTION_SETTINGS)
 
 _INGESTION_ATTEMPT_ID_KEY = "_rag_ingestion_attempt_id"
 _INGESTION_ATTEMPT_STARTED_AT_NS_KEY = "_rag_ingestion_attempt_started_at_ns"
@@ -335,12 +344,168 @@ def _make_unique_temp_path(user_id: str, filename: str) -> Optional[str]:
     return str(Path(RAG_UPLOAD_DIR, user_id, unique_name).resolve())
 
 
+_active_extraction_request = ContextVar("rag_extraction_request", default=None)
+
+
+class _ExtractionRequest:
+    def __init__(self):
+        self.disconnected = False
+        self.finish_storage = False
+        self.cleanup_started = False
+        self._mutation_lock = Lock()
+
+    def mark_disconnected(self):
+        with self._mutation_lock:
+            self.disconnected = True
+
+    def checkpoint(self):
+        if self.disconnected:
+            raise asyncio.CancelledError()
+
+    def begin_cleanup(self):
+        self.cleanup_started = True
+
+    def start_uncancellable_storage(self):
+        with self._mutation_lock:
+            self.checkpoint()
+            # These store APIs expose no safe attempt-scoped cancellation/undo boundary.
+            self.finish_storage = True
+
+
+def _with_extraction_request(file_argument, content_type="content_type"):
+    """Keep selected requests alive until cancellable work or started storage drains."""
+
+    def decorate(handler):
+        signature = inspect.signature(handler)
+
+        @wraps(handler)
+        async def wrapped(*args, **kwargs):
+            arguments = signature.bind(*args, **kwargs).arguments
+            file = arguments[file_argument]
+            format = extraction_format(file.filename, getattr(file, content_type))
+            if format is None:
+                return await handler(*args, **kwargs)
+
+            request = arguments["request"]
+            lifecycle = _ExtractionRequest()
+
+            async def wait_for_disconnect():
+                # FastAPI consumed the complete multipart/JSON body before the handler.
+                while (await request.receive())["type"] != "http.disconnect":
+                    pass
+                lifecycle.mark_disconnected()
+
+            token = _active_extraction_request.set(lifecycle)
+            try:
+                operation = asyncio.create_task(handler(*args, **kwargs))
+            finally:
+                _active_extraction_request.reset(token)
+            disconnected = asyncio.create_task(wait_for_disconnect())
+            try:
+                await asyncio.wait(
+                    (operation, disconnected), return_when=asyncio.FIRST_COMPLETED
+                )
+                if disconnected.done():
+                    disconnected.result()
+                    raise HTTPException(status_code=499, detail={"code": "CANCELLED"})
+                return operation.result()
+            finally:
+                if (
+                    not operation.done()
+                    and not operation.cancelling()
+                    and not (lifecycle.finish_storage or lifecycle.cleanup_started)
+                ):
+                    operation.cancel()
+                disconnected.cancel()
+                # Do not clean uploads or return while workers/rollback can still run.
+                await _drain_request_worker(
+                    asyncio.gather(operation, disconnected, return_exceptions=True)
+                )
+
+        return wrapped
+
+    return decorate
+
+
+async def _drain_request_worker(future):
+    """Defer repeated cancellation until submitted work or cleanup has finished."""
+    cancellation = None
+    with CancelScope(shield=True):
+        while True:
+            try:
+                result = await asyncio.shield(future)
+                break
+            except asyncio.CancelledError as error:
+                lifecycle = _active_extraction_request.get()
+                if lifecycle is not None:
+                    lifecycle.begin_cleanup()
+                # Executor futures can store CancelledError without being cancelled.
+                if future.cancelled() or (
+                    future.done()
+                    and isinstance(future.exception(), asyncio.CancelledError)
+                ):
+                    raise
+                cancellation = error
+            except Exception:
+                if cancellation is not None:
+                    raise cancellation
+                raise
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+async def _run_sync_request_store(executor, store, documents, ids):
+    lifecycle = _active_extraction_request.get()
+
+    def insert():
+        if not lifecycle.finish_storage:
+            lifecycle.start_uncancellable_storage()
+        return store.add_documents(documents, ids=ids)
+
+    if not lifecycle.finish_storage:
+        lifecycle.checkpoint()
+    future = asyncio.get_running_loop().run_in_executor(executor, insert)
+    return await _drain_request_worker(future)
+
+
+async def _extract_for_request(request: Optional[Request], file_path: str, format: str):
+    lifecycle = _active_extraction_request.get()
+    if request is None or lifecycle is not None:
+        if lifecycle is not None:
+            lifecycle.checkpoint()
+        return await extraction_client.extract(file_path, format)
+
+    async def wait_for_disconnect():
+        # FastAPI has already consumed the multipart/JSON body before this route.
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    disconnected = asyncio.create_task(wait_for_disconnect())
+    extraction = asyncio.create_task(extraction_client.extract(file_path, format))
+    try:
+        await asyncio.wait(
+            (disconnected, extraction), return_when=asyncio.FIRST_COMPLETED
+        )
+        if disconnected.done():
+            disconnected.result()
+            raise ExtractionError("CANCELLED", status_code=499)
+        return extraction.result()
+    finally:
+        disconnected.cancel()
+        extraction.cancel()
+        # Drain both tasks before cleanup or persistence, including ASGI cancellation.
+        with CancelScope(shield=True):
+            await asyncio.gather(disconnected, extraction, return_exceptions=True)
+
+
 async def load_file_content(
     filename: str,
     content_type: str,
     file_path: str,
     executor,
     raw_text: bool = False,
+    request: Optional[Request] = None,
 ) -> tuple:
     """Load file content using appropriate loader.
 
@@ -348,6 +513,30 @@ async def load_file_content(
     the ``/text`` endpoint) so text-formatted files are not semantically
     parsed.
     """
+    format = extraction_format(filename, content_type)
+    if format is not None:
+        try:
+            if format == "pdf" and PDF_EXTRACT_IMAGES:
+                raise ExtractionError("UNSUPPORTED_CONTENT")
+            segments = await _extract_for_request(request, file_path, format)
+        except ExtractionError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code},
+            ) from None
+        # Service pages are one-based; RAG metadata remains zero-based.
+        documents = [
+            Document(
+                page_content=segment["text"],
+                metadata={
+                    "source": file_path,
+                    **({"page": segment["index"] - 1} if format == "pdf" else {}),
+                },
+            )
+            for segment in segments
+        ]
+        return documents, True, format
+
     loader = None
     try:
         loader, known_type, file_ext = get_loader(
@@ -380,8 +569,18 @@ def extract_text_from_documents(documents: List[Document], file_ext: str) -> str
 
 async def cleanup_temp_file_async(file_path: str) -> None:
     """Clean up temporary file asynchronously."""
+    lifecycle = _active_extraction_request.get()
+    if lifecycle is not None:
+        lifecycle.begin_cleanup()
     try:
-        await aiofiles.os.remove(file_path)
+        # Starlette cancellation scopes must not interrupt upload cleanup.
+        with CancelScope(shield=True):
+            if lifecycle is None:
+                await aiofiles.os.remove(file_path)
+            else:
+                await _drain_request_worker(
+                    asyncio.create_task(aiofiles.os.remove(file_path))
+                )
     except Exception as e:
         logger.error(
             "Failed to remove temporary file | Path: %s | Error: %s | Traceback: %s",
@@ -684,6 +883,9 @@ async def _process_documents_async_pipeline(
     ) -> List[str]:
         """Track started inserts so rollback waits for executor-backed work."""
         nonlocal cleanup_needed
+        lifecycle = _active_extraction_request.get()
+        if lifecycle is not None:
+            lifecycle.checkpoint()
         insert_task = asyncio.create_task(
             vector_store.aadd_documents(
                 batch_documents, ids=batch_ids, executor=executor
@@ -778,39 +980,7 @@ async def _process_documents_async_pipeline(
     producer_task = None
     consumer_tasks: List[asyncio.Task] = []
 
-    try:
-        # Start producer and consumers concurrently
-        producer_task = asyncio.create_task(batch_producer())
-        consumer_tasks = [
-            asyncio.create_task(embedding_consumer()) for _ in range(consumer_count)
-        ]
-
-        # Wait for all tasks to complete
-        await asyncio.gather(producer_task, *consumer_tasks, return_exceptions=False)
-
-        for batch_num in range(1, num_batches + 1):
-            all_ids.extend(successful_batch_ids[batch_num])
-
-        logger.info(
-            "Async pipeline completed | user_id=%s | file_id=%s | inserted_ids=%d | %s",
-            user_id,
-            file_id,
-            len(all_ids),
-            get_process_memory_details(),
-        )
-
-        return all_ids
-
-    except (Exception, asyncio.CancelledError) as e:
-        failure_event.set()
-        logger.error(
-            "Pipeline failed | user_id=%s | file_id=%s | inserted_batches=%d | error=%s | %s",
-            user_id,
-            file_id,
-            len(successful_batch_ids),
-            e,
-            get_process_memory_details(),
-        )
+    async def cleanup_failed_pipeline():
         if producer_task is not None or consumer_tasks:
             # if one of the tasks is still running, cancel it
             if producer_task is not None and not producer_task.done():
@@ -858,6 +1028,49 @@ async def _process_documents_async_pipeline(
                     cleanup_error,
                     get_process_memory_details(),
                 )
+
+    try:
+        # Start producer and consumers concurrently
+        producer_task = asyncio.create_task(batch_producer())
+        consumer_tasks = [
+            asyncio.create_task(embedding_consumer()) for _ in range(consumer_count)
+        ]
+
+        # Wait for all tasks to complete
+        await asyncio.gather(producer_task, *consumer_tasks, return_exceptions=False)
+        lifecycle = _active_extraction_request.get()
+        if lifecycle is not None:
+            lifecycle.checkpoint()
+
+        for batch_num in range(1, num_batches + 1):
+            all_ids.extend(successful_batch_ids[batch_num])
+
+        logger.info(
+            "Async pipeline completed | user_id=%s | file_id=%s | inserted_ids=%d | %s",
+            user_id,
+            file_id,
+            len(all_ids),
+            get_process_memory_details(),
+        )
+
+        return all_ids
+
+    except (Exception, asyncio.CancelledError) as e:
+        failure_event.set()
+        logger.error(
+            "Pipeline failed | user_id=%s | file_id=%s | inserted_batches=%d | error=%s | %s",
+            user_id,
+            file_id,
+            len(successful_batch_ids),
+            e,
+            get_process_memory_details(),
+        )
+        lifecycle = _active_extraction_request.get()
+        if lifecycle is None:
+            await cleanup_failed_pipeline()
+        else:
+            lifecycle.begin_cleanup()
+            await _drain_request_worker(asyncio.create_task(cleanup_failed_pipeline()))
 
         # Re-raise the original error
         raise
@@ -916,21 +1129,27 @@ async def _process_documents_batched_sync(
 
         try:
             # Wrap sync call in executor to avoid blocking the event loop
-            batch_result_ids = await loop.run_in_executor(
-                executor,
-                lambda docs=batch_documents, ids=batch_ids: vector_store.add_documents(
-                    docs, ids=ids
-                ),
-            )
+            if _active_extraction_request.get() is not None:
+                batch_result_ids = await _run_sync_request_store(
+                    executor, vector_store, batch_documents, batch_ids
+                )
+            else:
+                batch_result_ids = await loop.run_in_executor(
+                    executor,
+                    lambda docs=batch_documents, ids=batch_ids: vector_store.add_documents(
+                        docs, ids=ids
+                    ),
+                )
             all_ids.extend(batch_result_ids)
 
         except Exception as batch_error:
             logger.error("Batch %d failed: %s", batch_idx + 1, batch_error)
 
             # Rollback entire file from vector store
-            if (
-                all_ids
-            ):  # any batch succeeded (i.e., any chunks for this file were inserted)
+            if all_ids and _active_extraction_request.get() is not None:
+                # Sync stores cannot safely distinguish this attempt from older rows.
+                logger.warning("Retaining committed sync batches for file %s", file_id)
+            elif all_ids:
                 logger.warning("Rolling back file %s due to batch failure", file_id)
                 try:
                     await loop.run_in_executor(
@@ -1003,7 +1222,10 @@ async def store_data_in_vector_db(
     start_time = time.perf_counter()
     # Run document preparation in executor to avoid blocking the event loop
     loop = asyncio.get_running_loop()
-    docs = await loop.run_in_executor(
+    lifecycle = _active_extraction_request.get()
+    if lifecycle is not None:
+        lifecycle.checkpoint()
+    preparation = loop.run_in_executor(
         executor,
         _prepare_documents_sync,
         data,
@@ -1011,6 +1233,11 @@ async def store_data_in_vector_db(
         user_id,
         clean_content,
     )
+    if lifecycle is None:
+        docs = await preparation
+    else:
+        docs = await _drain_request_worker(preparation)
+        lifecycle.checkpoint()
 
     logger.info(
         "Documents prepared | %s",
@@ -1030,9 +1257,15 @@ async def store_data_in_vector_db(
         if EMBEDDING_BATCH_SIZE <= 0:
             # synchronously embed the file and insert into vector store in one go
             if isinstance(vector_store, AsyncPgVector):
+                if lifecycle is not None:
+                    lifecycle.start_uncancellable_storage()
                 _tag_documents_for_ingestion(docs, file_id)
                 ids = await vector_store.aadd_documents(
                     docs, ids=[file_id] * len(docs), executor=executor
+                )
+            elif lifecycle is not None:
+                ids = await _run_sync_request_store(
+                    executor, vector_store, docs, [file_id] * len(docs)
                 )
             else:
                 ids = vector_store.add_documents(docs, ids=[file_id] * len(docs))
@@ -1094,6 +1327,7 @@ async def store_data_in_vector_db(
 
 
 @router.post("/local/embed")
+@_with_extraction_request("document", content_type="file_content_type")
 async def embed_local_file(
     document: StoreDocument, request: Request, entity_id: str = None
 ):
@@ -1114,7 +1348,6 @@ async def embed_local_file(
             detail=ERROR_MESSAGES.FILE_NOT_FOUND,
         )
 
-    loader = None
     try:
         logger.info(
             "Ingestion started | %s",
@@ -1127,12 +1360,12 @@ async def embed_local_file(
                 temp_file_path=file_path,
             ),
         )
-        loader, known_type, file_ext = get_loader(
-            document.filename, document.file_content_type, file_path
-        )
-        loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(
-            request.app.state.thread_pool, lambda: list(loader.lazy_load())
+        data, known_type, file_ext = await load_file_content(
+            document.filename,
+            document.file_content_type,
+            file_path,
+            request.app.state.thread_pool,
+            request=request,
         )
 
         result = await store_data_in_vector_db(
@@ -1147,7 +1380,7 @@ async def embed_local_file(
             temp_file_path=file_path,
         )
 
-        if result:
+        if result and "error" not in result:
             return {
                 "status": True,
                 "file_id": document.file_id,
@@ -1188,13 +1421,10 @@ async def embed_local_file(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ERROR_MESSAGES.DEFAULT(e),
             )
-    finally:
-        # Clean up temporary UTF-8 file if it was created for encoding conversion
-        if loader is not None:
-            cleanup_temp_encoding_file(loader)
 
 
 @router.post("/embed")
+@_with_extraction_request("file")
 async def embed_file(
     request: Request,
     file_id: str = Form(...),
@@ -1239,6 +1469,7 @@ async def embed_file(
             file.content_type,
             validated_file_path,
             request.app.state.thread_pool,
+            request=request,
         )
 
         logger.debug(
@@ -1261,23 +1492,11 @@ async def embed_file(
             temp_file_path=validated_file_path,
         )
 
-        if not result:
-            response_status = False
-            response_message = "Failed to process/store the file data."
+        if not result or "error" in result:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to process/store the file data.",
             )
-        elif "error" in result:
-            response_status = False
-            response_message = "Failed to process/store the file data."
-            if isinstance(result["error"], str):
-                response_message = result["error"]
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="An unspecified error occurred.",
-                )
     except HTTPException as http_exc:
         response_status = False
         response_message = f"HTTP Exception: {http_exc.detail}"
@@ -1368,6 +1587,7 @@ async def load_document_context(request: Request, id: str, entity_id: str = None
 
 
 @router.post("/embed-upload")
+@_with_extraction_request("uploaded_file")
 async def embed_file_upload(
     request: Request,
     file_id: str = Form(...),
@@ -1409,6 +1629,7 @@ async def embed_file_upload(
             uploaded_file.content_type,
             validated_temp_file_path,
             request.app.state.thread_pool,
+            request=request,
         )
 
         result = await store_data_in_vector_db(
@@ -1423,7 +1644,7 @@ async def embed_file_upload(
             temp_file_path=validated_temp_file_path,
         )
 
-        if not result:
+        if not result or "error" in result:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to process/store the file data.",
@@ -1518,6 +1739,7 @@ async def query_embeddings_by_file_ids(request: Request, body: QueryMultipleBody
 
 
 @router.post("/text")
+@_with_extraction_request("file")
 async def extract_text_from_file(
     request: Request,
     file_id: str = Form(...),
@@ -1547,6 +1769,7 @@ async def extract_text_from_file(
             validated_temp_file_path,
             request.app.state.thread_pool,
             raw_text=True,
+            request=request,
         )
 
         # Extract text content from loaded documents

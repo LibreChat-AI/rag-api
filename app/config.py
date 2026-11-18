@@ -10,6 +10,7 @@ from dotenv import find_dotenv, load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.services.vector_store.factory import get_vector_store
+from app.services.extraction_client import ExtractionSettings
 
 load_dotenv(find_dotenv())
 
@@ -40,6 +41,8 @@ def get_env_variable(
         return default_value
     return value
 
+
+EXTRACTION_SETTINGS = ExtractionSettings.from_env()
 
 RAG_HOST = os.getenv("RAG_HOST", "0.0.0.0")
 RAG_PORT = int(os.getenv("RAG_PORT", 8000))

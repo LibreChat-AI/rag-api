@@ -1,0 +1,42 @@
+services:
+  extraction-init:
+    build: &extraction-build
+      context: https://github.com/LibreChat-AI/code-interpreter.git#c7bfe421243c66d4d5d9c6e3d08d276586ac47bf
+      dockerfile: packages/extraction/Dockerfile
+      target: runtime
+    command: ['node', 'dist/provision.js']
+    healthcheck:
+      disable: true
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 16
+    environment:
+      EXTRACTION_TOKEN_FILE: /run/extraction/token
+    volumes:
+      - extraction-credentials:/run/extraction
+
+  extraction:
+    build: *extraction-build
+    init: true
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [extraction]
+    depends_on:
+      extraction-init:
+        condition: service_completed_successfully
+    environment:
+      EXTRACTION_TOKEN_FILE: /run/extraction/token
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 32
+    tmpfs:
+      - /jobs:rw,noexec,nosuid,nodev,size=96m,nr_inodes=1024,uid=10001,gid=10001,mode=0700
+    volumes:
+      - extraction-credentials:/run/extraction:ro

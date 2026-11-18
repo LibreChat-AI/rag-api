@@ -1,14 +1,34 @@
 version: '3.8'
 
 services:
+  extraction-init: !override
+    extends:
+      file: extraction-compose.yaml
+      service: extraction-init
+
+  extraction: !override
+    extends:
+      file: extraction-compose.yaml
+      service: extraction
+
   rag_api:
     build: .
+    networks: [default, extraction]
+    depends_on:
+      extraction:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
       - ./uploads:/app/uploads
+      - extraction-credentials:/run/extraction:ro
     env_file:
       - .env
 
 volumes:
+  extraction-credentials:
   pgdata2:
+
+networks:
+  extraction:
+    internal: true

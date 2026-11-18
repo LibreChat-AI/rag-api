@@ -1,7 +1,3 @@
-import os
-from collections.abc import Iterator
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from app.utils.document_loader import get_loader, clean_text, process_documents
@@ -46,17 +42,6 @@ def test_process_documents():
     assert "# PAGE 2" in processed
 
 
-def test_safe_pdf_loader_class():
-    """Test that SafePyPDFLoader class can be instantiated"""
-    from app.utils.document_loader import SafePyPDFLoader
-
-    # Test instantiation
-    loader = SafePyPDFLoader("dummy.pdf", extract_images=True)
-    assert loader.filepath == "dummy.pdf"
-    assert loader.extract_images == True
-    assert loader._temp_filepath is None
-
-
 def test_get_loader_text_lazy_load(tmp_path):
     """Test that lazy_load returns an iterator yielding documents."""
     file_path = tmp_path / "test.txt"
@@ -67,111 +52,6 @@ def test_get_loader_text_lazy_load(tmp_path):
     data = list(loader.lazy_load())
     assert len(data) > 0
     assert hasattr(data[0], "page_content")
-
-
-def test_get_loader_pdf(tmp_path):
-    """Test get_loader returns SafePyPDFLoader for PDF files"""
-    # Create a dummy PDF file path (doesn't need to be real for this test)
-    file_path = tmp_path / "test.pdf"
-    file_path.write_text("dummy content")  # Not a real PDF, but that's OK for this test
-
-    loader, known_type, file_ext = get_loader(
-        "test.pdf", "application/pdf", str(file_path)
-    )
-
-    # Check that we get our SafePyPDFLoader
-    from app.utils.document_loader import SafePyPDFLoader
-
-    assert isinstance(loader, SafePyPDFLoader)
-    assert known_type is True
-    assert file_ext == "pdf"
-
-
-def test_safe_pdf_loader_lazy_load():
-    """Test that SafePyPDFLoader.lazy_load() returns an Iterator."""
-    from app.utils.document_loader import SafePyPDFLoader
-
-    loader = SafePyPDFLoader("dummy.pdf", extract_images=False)
-    assert hasattr(loader, "lazy_load")
-    result = loader.lazy_load()
-    assert isinstance(result, Iterator)
-
-
-def test_safe_pdf_loader_fallback_no_duplicate_pages():
-    """Fallback after mid-stream KeyError must not duplicate already-yielded pages."""
-    from app.utils.document_loader import SafePyPDFLoader
-
-    fallback_docs = [Document(page_content=f"fallback page {i}") for i in range(5)]
-
-    def primary_gen():
-        yield Document(page_content="partial page 0")
-        yield Document(page_content="partial page 1")
-        raise KeyError("/Filter")
-
-    def fallback_gen():
-        yield from fallback_docs
-
-    loader = SafePyPDFLoader("dummy.pdf", extract_images=True)
-
-    with patch("app.utils.document_loader.PyPDFLoader") as MockPDF:
-        primary_instance = MagicMock()
-        primary_instance.lazy_load.side_effect = primary_gen
-        fallback_instance = MagicMock()
-        fallback_instance.lazy_load.side_effect = fallback_gen
-        MockPDF.side_effect = [primary_instance, fallback_instance]
-
-        result = list(loader.lazy_load())
-
-    # Must be exactly the 5 fallback pages, NOT 2 partial + 5 fallback = 7
-    assert len(result) == 5
-    assert result[0].page_content == "fallback page 0"
-    assert result[-1].page_content == "fallback page 4"
-
-
-def test_safe_pdf_loader_fallback_via_load():
-    """load() delegates to lazy_load(), so fallback must also be correct via load()."""
-    from app.utils.document_loader import SafePyPDFLoader
-
-    fallback_docs = [Document(page_content=f"fb {i}") for i in range(3)]
-
-    def primary_gen():
-        yield Document(page_content="partial 0")
-        raise KeyError("/Filter")
-
-    def fallback_gen():
-        yield from fallback_docs
-
-    loader = SafePyPDFLoader("dummy.pdf", extract_images=True)
-
-    with patch("app.utils.document_loader.PyPDFLoader") as MockPDF:
-        primary_instance = MagicMock()
-        primary_instance.lazy_load.side_effect = primary_gen
-        fallback_instance = MagicMock()
-        fallback_instance.lazy_load.side_effect = fallback_gen
-        MockPDF.side_effect = [primary_instance, fallback_instance]
-
-        result = loader.load()
-
-    assert len(result) == 3
-    assert result[0].page_content == "fb 0"
-
-
-def test_safe_pdf_loader_non_filter_error_propagates():
-    """KeyError that isn't /Filter should propagate, not silently fallback."""
-    from app.utils.document_loader import SafePyPDFLoader
-
-    def bad_gen():
-        raise KeyError("SomeOtherKey")
-
-    loader = SafePyPDFLoader("dummy.pdf", extract_images=True)
-
-    with patch("app.utils.document_loader.PyPDFLoader") as MockPDF:
-        instance = MagicMock()
-        instance.lazy_load.side_effect = bad_gen
-        MockPDF.return_value = instance
-
-        with pytest.raises(KeyError, match="SomeOtherKey"):
-            list(loader.lazy_load())
 
 
 MARKDOWN_SAMPLE = (
@@ -236,26 +116,9 @@ def test_get_loader_markdown_raw_text_by_extension_only(tmp_path):
     assert isinstance(loader, TextLoader)
 
 
-def test_get_loader_raw_text_leaves_pdf_alone(tmp_path):
-    """raw_text must not disturb binary formats — PDF still uses the PDF loader."""
-    from app.utils.document_loader import SafePyPDFLoader
-
-    file_path = tmp_path / "doc.pdf"
-    file_path.write_text("not a real pdf")
-
-    loader, _, file_ext = get_loader(
-        "doc.pdf", "application/pdf", str(file_path), raw_text=True
-    )
-
-    assert isinstance(loader, SafePyPDFLoader)
-    assert file_ext == "pdf"
-
-
 @pytest.mark.parametrize(
     "filename, expected_loader_name",
     [
-        ("doc.pdf", "SafePyPDFLoader"),
-        ("report.docx", "Docx2txtLoader"),
         ("book.epub", "UnstructuredEPubLoader"),
         ("data.xlsx", "UnstructuredExcelLoader"),
         ("slides.pptx", "UnstructuredPowerPointLoader"),
@@ -273,8 +136,30 @@ def test_get_loader_raw_text_respects_binary_extensions_over_markdown_mime(
     file_path = tmp_path / filename
     file_path.write_text("placeholder binary content")
 
-    loader, _, _ = get_loader(
-        filename, "text/markdown", str(file_path), raw_text=True
-    )
+    loader, _, _ = get_loader(filename, "text/markdown", str(file_path), raw_text=True)
 
     assert type(loader).__name__ == expected_loader_name
+
+
+@pytest.mark.parametrize(
+    "filename,mime",
+    [
+        ("doc.pdf", "application/pdf"),
+        ("doc.pdf", "text/markdown"),
+        ("doc.docx", "text/xml"),
+        ("doc.docx", "text/markdown"),
+        ("opaque.bin", "application/pdf"),
+        (
+            "opaque.bin",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+    ],
+)
+@pytest.mark.parametrize("raw_text", [False, True])
+def test_migrated_formats_cannot_construct_local_loader(
+    tmp_path, filename, mime, raw_text
+):
+    path = tmp_path / filename
+    path.write_bytes(b"not parsed locally")
+    with pytest.raises(ValueError, match="asynchronous extraction service"):
+        get_loader(filename, mime, str(path), raw_text=raw_text)

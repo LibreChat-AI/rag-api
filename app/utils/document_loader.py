@@ -193,6 +193,31 @@ def clean_text(text: str) -> str:
     return text
 
 
+def clean_metadata(metadata: dict) -> dict:
+    """Strip NUL bytes from metadata values so they survive JSONB insertion.
+
+    PostgreSQL cannot store ``\\u0000`` in text/JSONB columns; PDF producers
+    (e.g. Canon/Adobe PSL drivers) sometimes embed NUL in fields like
+    ``producer``. The same constraint that the existing text cleaning guards
+    against applies identically to the JSONB ``cmetadata`` column, so recurse
+    into nested dict/list values to cover every string.
+
+    :param metadata: The original document metadata.
+    :return: A new metadata dict with NUL bytes removed from all string values.
+    """
+
+    def _clean(value):
+        if isinstance(value, str):
+            return remove_null(value)
+        if isinstance(value, dict):
+            return {k: _clean(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_clean(v) for v in value]
+        return value
+
+    return {k: _clean(v) for k, v in metadata.items()}
+
+
 def remove_null(text: str) -> str:
     """
     Remove NUL (0x00) characters from a string.

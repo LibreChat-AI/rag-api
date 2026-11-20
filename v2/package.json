@@ -1,0 +1,30 @@
+{
+  "name": "@librechat/rag-api-v2-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": "1.4.2"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "migrate": "bun src/migrate.ts",
+    "test": "bun test test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/main.ts src/migrate.ts --target=bun --packages=external --outdir=dist",
+    "format:check": "prettier --check src test scripts package.json tsconfig.json compose.yaml",
+    "test:container": "bash scripts/qualify.sh",
+    "bench": "bun scripts/benchmark.ts"
+  },
+  "dependencies": {
+    "@clickhouse/client": "1.23.1",
+    "hono": "4.13.13",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "prettier": "3.9.9",
+    "typescript": "7.0.2"
+  }
+}

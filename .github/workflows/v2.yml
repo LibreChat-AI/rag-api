@@ -1,0 +1,23 @@
+name: RAG v2 PoC
+on:
+  pull_request:
+    paths: ['v2/**', '.github/workflows/v2.yml']
+  push:
+    branches: [main]
+    paths: ['v2/**', '.github/workflows/v2.yml']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+        working-directory: v2
+      - run: bun run typecheck && bun run format:check && bun test test && bun run build
+        working-directory: v2
+      - run: bun run test:container
+        working-directory: v2

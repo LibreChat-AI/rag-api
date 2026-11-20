@@ -1,0 +1,43 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    environment:
+      CLICKHOUSE_DB: rag_v2
+      CLICKHOUSE_USER: rag
+      CLICKHOUSE_PASSWORD: ${RAG_V2_CLICKHOUSE_PASSWORD:?Set a database password}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks: [database]
+    healthcheck:
+      test: [CMD, clickhouse-client, --query, SELECT 1]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  rag:
+    build: .
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ["127.0.0.1:8001:8001"]
+    environment:
+      RAG_V2_JWKS_JSON: ${RAG_V2_JWKS_JSON:?Set public verification keys}
+      RAG_V2_JWT_ISSUER: ${RAG_V2_JWT_ISSUER:-librechat}
+      RAG_V2_CLICKHOUSE_URL: http://clickhouse:8123
+      RAG_V2_ALLOW_INSECURE_CLICKHOUSE: "true"
+      RAG_V2_CLICKHOUSE_USER: rag
+      RAG_V2_CLICKHOUSE_PASSWORD: ${RAG_V2_CLICKHOUSE_PASSWORD:?Set a database password}
+      RAG_V2_EMBEDDING_API_KEY: ${RAG_V2_EMBEDDING_API_KEY:?Set an embedding key}
+      RAG_V2_MODE: coordinator
+      RAG_V2_SINGLE_WRITER: "true"
+    command: [sh, -c, "bun dist/migrate.js && exec bun dist/main.js"]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks: [database, outbound]
+networks:
+  database:
+    internal: true
+  outbound: {}
+volumes:
+  clickhouse-data: {}

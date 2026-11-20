@@ -7,7 +7,7 @@
   // --------------------------------------------------------
   // [build] - Configure the build process
   // --------------------------------------------------------
-  "build": {
+  "build": {y
       "dockerfile": "Dockerfile",
       "context": "..",
       "args": {

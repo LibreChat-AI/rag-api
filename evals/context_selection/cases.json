@@ -1,0 +1,615 @@
+[
+  {
+    "id": "refund-exception",
+    "query": "When are refunds allowed, and what exception applies?",
+    "required": [
+      "window",
+      "exception"
+    ],
+    "passages": [
+      {
+        "id": "refund-exception:0",
+        "source": "overview",
+        "text": "Refund policy and refund requests are discussed in this refund overview.",
+        "supports": []
+      },
+      {
+        "id": "refund-exception:1",
+        "source": "terms",
+        "text": "Unused purchases are refundable for 30 days after payment.",
+        "supports": [
+          "window"
+        ]
+      },
+      {
+        "id": "refund-exception:2",
+        "source": "terms",
+        "text": "Except for activated licenses: after activation no refund is available.",
+        "supports": [
+          "exception"
+        ]
+      },
+      {
+        "id": "refund-exception:3",
+        "source": "marketing",
+        "text": "We prioritize customer happiness and a smooth purchasing experience.",
+        "supports": []
+      }
+    ]
+  },
+  {
+    "id": "identifier",
+    "query": "What fixes BUG_1842?",
+    "required": [
+      "fix"
+    ],
+    "passages": [
+      {
+        "id": "identifier:0",
+        "source": "index",
+        "text": "BUG_1842 BUG_1842 BUG_1842 issue tracker and release index.",
+        "supports": []
+      },
+      {
+        "id": "identifier:1",
+        "source": "release",
+        "text": "For BUG_1842, clear the stale lease before acquiring the replacement lock.",
+        "supports": [
+          "fix"
+        ]
+      },
+      {
+        "id": "identifier:2",
+        "source": "notes",
+        "text": "Fixes and bugs are recorded in our change history.",
+        "supports": []
+      }
+    ]
+  },
+  {
+    "id": "negation",
+    "query": "Does the retention rule require immediate deletion?",
+    "required": [
+      "rule",
+      "hold"
+    ],
+    "passages": [
+      {
+        "id": "negation:0",
+        "source": "overview",
+        "text": "Retention deletion: our guide discusses deletion and retention.",
+        "supports": []
+      },
+      {
+        "id": "negation:1",
+        "source": "policy",
+        "text": "No. Retention requires keeping the record for seven years.",
+        "supports": [
+          "rule"
+        ]
+      },
+      {
+        "id": "negation:2",
+        "source": "legal",
+        "text": "A legal hold prevents deletion even after the retention period expires.",
+        "supports": [
+          "hold"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "multi-facet",
+    "query": "What caused the battery recall, and what are replacement tradeoffs?",
+    "required": [
+      "cause",
+      "benefit",
+      "risk"
+    ],
+    "passages": [
+      {
+        "id": "multi-facet:0",
+        "source": "news",
+        "text": "The battery recall has generated substantial discussion across the industry.",
+        "supports": []
+      },
+      {
+        "id": "multi-facet:1",
+        "source": "recall",
+        "text": "A separator defect can short-circuit cells and caused the recall.",
+        "supports": [
+          "cause"
+        ]
+      },
+      {
+        "id": "multi-facet:2",
+        "source": "replacement",
+        "text": "The replacement reduces fire risk by using a more stable chemistry.",
+        "supports": [
+          "benefit"
+        ]
+      },
+      {
+        "id": "multi-facet:3",
+        "source": "lab",
+        "text": "The safer replacement has 15 percent less capacity and adds 200 grams.",
+        "supports": [
+          "risk"
+        ]
+      },
+      {
+        "id": "multi-facet:4",
+        "source": "advert",
+        "text": "Read more battery recall news and battery recall information here.",
+        "supports": []
+      }
+    ]
+  },
+  {
+    "id": "conflicting-sources",
+    "query": "How long is the service retention period?",
+    "required": [
+      "old",
+      "current"
+    ],
+    "passages": [
+      {
+        "id": "conflicting-sources:0",
+        "source": "old-handbook",
+        "text": "The 2023 handbook states a retention period of 90 days.",
+        "supports": [
+          "old"
+        ]
+      },
+      {
+        "id": "conflicting-sources:1",
+        "source": "current-policy",
+        "text": "The 2026 policy supersedes the handbook: retention is now 30 days.",
+        "supports": [
+          "current"
+        ]
+      },
+      {
+        "id": "conflicting-sources:2",
+        "source": "menu",
+        "text": "Service retention period help center, documentation, pricing and support.",
+        "supports": []
+      }
+    ]
+  },
+  {
+    "id": "unicode",
+    "query": "保管 期限 は?",
+    "required": [
+      "duration"
+    ],
+    "passages": [
+      {
+        "id": "unicode:0",
+        "source": "navigation",
+        "text": "保管 期限 メニュー 情報 一覧",
+        "supports": []
+      },
+      {
+        "id": "unicode:1",
+        "source": "policy",
+        "text": "保管 期限 は 30日 です。",
+        "supports": [
+          "duration"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "duplicates",
+    "query": "What is the upload limit?",
+    "required": [
+      "size",
+      "exception"
+    ],
+    "passages": [
+      {
+        "id": "duplicates:0",
+        "source": "mirror-a",
+        "text": "The upload limit is 15 megabytes.",
+        "supports": [
+          "size"
+        ]
+      },
+      {
+        "id": "duplicates:1",
+        "source": "mirror-b",
+        "text": "The upload limit is 15 megabytes.",
+        "supports": [
+          "size"
+        ]
+      },
+      {
+        "id": "duplicates:2",
+        "source": "policy",
+        "text": "Except for administrators, who may raise the upload limit.",
+        "supports": [
+          "exception"
+        ]
+      },
+      {
+        "id": "duplicates:3",
+        "source": "menu",
+        "text": "Upload limit settings and upload limit controls.",
+        "supports": []
+      }
+    ]
+  },
+  {
+    "id": "late-evidence",
+    "query": "What condition allows cancelling the contract?",
+    "required": [
+      "condition"
+    ],
+    "passages": [
+      {
+        "id": "late-evidence:0",
+        "source": "page-0",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:1",
+        "source": "page-1",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:2",
+        "source": "page-2",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:3",
+        "source": "page-3",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:4",
+        "source": "page-4",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:5",
+        "source": "page-5",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:6",
+        "source": "page-6",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:7",
+        "source": "page-7",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:8",
+        "source": "page-8",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:9",
+        "source": "page-9",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:10",
+        "source": "page-10",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:11",
+        "source": "page-11",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:12",
+        "source": "page-12",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:13",
+        "source": "page-13",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:14",
+        "source": "page-14",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:15",
+        "source": "page-15",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:16",
+        "source": "page-16",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:17",
+        "source": "page-17",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:18",
+        "source": "page-18",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:19",
+        "source": "page-19",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:20",
+        "source": "page-20",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:21",
+        "source": "page-21",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:22",
+        "source": "page-22",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:23",
+        "source": "page-23",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:24",
+        "source": "page-24",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:25",
+        "source": "page-25",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:26",
+        "source": "page-26",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:27",
+        "source": "page-27",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:28",
+        "source": "page-28",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:29",
+        "source": "page-29",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:30",
+        "source": "page-30",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:31",
+        "source": "page-31",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:32",
+        "source": "page-32",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:33",
+        "source": "page-33",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:34",
+        "source": "page-34",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:35",
+        "source": "page-35",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:36",
+        "source": "page-36",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:37",
+        "source": "page-37",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:38",
+        "source": "page-38",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:39",
+        "source": "page-39",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:40",
+        "source": "page-40",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:41",
+        "source": "page-41",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:42",
+        "source": "page-42",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:43",
+        "source": "page-43",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:44",
+        "source": "page-44",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:45",
+        "source": "page-45",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:46",
+        "source": "page-46",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:47",
+        "source": "page-47",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:48",
+        "source": "page-48",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:49",
+        "source": "page-49",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:50",
+        "source": "page-50",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:51",
+        "source": "page-51",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:52",
+        "source": "page-52",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:53",
+        "source": "page-53",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:54",
+        "source": "page-54",
+        "text": "Contract cancellation and contract conditions: introductory navigation.",
+        "supports": []
+      },
+      {
+        "id": "late-evidence:55",
+        "source": "terms-last",
+        "text": "Cancellation is allowed only after written notice and a 14-day cure period.",
+        "supports": [
+          "condition"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "unanswerable",
+    "query": "What is the asteroid surface temperature?",
+    "required": [],
+    "passages": [
+      {
+        "id": "unanswerable:0",
+        "source": "sports",
+        "text": "The local team won the regional championship.",
+        "supports": []
+      },
+      {
+        "id": "unanswerable:1",
+        "source": "baking",
+        "text": "Bread preparation uses flour, yeast, and warm water.",
+        "supports": []
+      }
+    ]
+  },
+  {
+    "id": "empty-pool",
+    "query": "What does the unavailable policy require?",
+    "required": [],
+    "passages": []
+  }
+]

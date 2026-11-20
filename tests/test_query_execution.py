@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from langchain_core.documents import Document
 
 from app.config import VectorDBType
-from app.models import QueryMultipleBody, QueryRequestBody
+from app.models import ExistsRequestBody, QueryMultipleBody, QueryRequestBody
 from app.routes import document_routes
 from app.services.vector_store.async_pg_vector import AsyncPgVector
 from app.services.vector_store.extended_pg_vector import ExtendedPgVector
@@ -253,3 +253,41 @@ async def test_empty_result_contract_unchanged(query_context, query_route):
             await query_context.query()
         assert caught.value.status_code == 404
         assert caught.value.detail == "No documents found for the given query"
+
+
+async def test_sync_store_presence_check_leaves_event_loop_responsive(monkeypatch):
+    """A synchronous store (Atlas) answers ``/exists`` with a blocking driver call,
+    so it must run in the worker pool rather than on the event loop."""
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), threading.Event()
+
+    def get_filtered_ids(ids, owners):
+        assert threading.current_thread().name.startswith("exists-test")
+        assert list(owners) == ["agent-1"]
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(timeout=5):
+            raise TimeoutError("event loop did not release the worker")
+        return ["file-2"]
+
+    store = SimpleNamespace(get_filtered_ids=get_filtered_ids)
+    monkeypatch.setattr(document_routes, "vector_store", store)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="exists-test") as pool:
+        req = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(thread_pool=pool)),
+            state=SimpleNamespace(user={"id": "owner-1"}),
+        )
+        task = asyncio.create_task(
+            document_routes.get_existing_file_ids(
+                req,
+                ExistsRequestBody(file_ids=["file-1", "file-2"], entity_id="agent-1"),
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            assert not task.done()
+        finally:
+            release.set()
+            result = await asyncio.wait_for(task, timeout=2)
+
+    assert result == {"file_ids": ["file-2"]}

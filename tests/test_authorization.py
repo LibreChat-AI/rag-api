@@ -406,3 +406,44 @@ def test_unauthenticated_deployment_keeps_reading_its_own_chunks(monkeypatch):
         assert listed.json() == [public_file]
     finally:
         ROWS.pop()
+
+
+def test_exists_answers_for_the_named_entity_alone(attacker_headers):
+    """A presence check names one namespace. The caller's own row under the
+    shared file id must not answer for the agent, which ``/query`` cannot tell
+    apart because it reads the caller and the entity together."""
+    response = client.post(
+        "/exists",
+        json={"file_ids": [SHARED_FILE, AGENT_FILE], "entity_id": AGENT},
+        headers=attacker_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"file_ids": [AGENT_FILE]}
+
+
+def test_exists_without_entity_id_answers_for_the_caller(attacker_headers):
+    """With no entity named the caller is the namespace, so a victim's file id
+    reads as absent and the route is not an existence oracle."""
+    response = client.post(
+        "/exists",
+        json={"file_ids": [VICTIM_FILE, SHARED_FILE, ATTACKER_FILE, SHARED_FILE]},
+        headers=attacker_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"file_ids": [SHARED_FILE, ATTACKER_FILE]}
+
+
+def test_exists_on_an_unauthenticated_deployment(monkeypatch):
+    """Without ``JWT_SECRET`` writes stamp the entity or ``public``, and the
+    presence check resolves to the same owner."""
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+
+    named = client.post(
+        "/exists", json={"file_ids": [AGENT_FILE, VICTIM_FILE], "entity_id": AGENT}
+    )
+    unnamed = client.post("/exists", json={"file_ids": [AGENT_FILE]})
+
+    assert named.json() == {"file_ids": [AGENT_FILE]}
+    assert unnamed.json() == {"file_ids": []}

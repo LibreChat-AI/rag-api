@@ -45,7 +45,7 @@ from app.config import (
     PARALLEL_EXECUTION,
     RAG_DISTANCE_THRESHOLD,
 )
-from app.scope import file_clause, files_clause, resolve_scope
+from app.scope import file_clause, files_clause, resolve_scope, resolve_owner_scope
 
 # Warn once at import time if the user set a threshold under Atlas, where
 # the score direction is inverted (Atlas vectorSearchScore: higher = better)
@@ -88,6 +88,7 @@ from app.models import (
     StoreDocument,
     QueryRequestBody,
     DocumentResponse,
+    ExistsRequestBody,
     QueryMultipleBody,
 )
 from app.services.vector_store.async_pg_vector import AsyncPgVector
@@ -413,6 +414,50 @@ async def get_all_ids(request: Request, entity_id: str = None):
     except Exception as e:
         logger.error(
             "Failed to get all IDs | Error: %s | Traceback: %s",
+            str(e),
+            traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/exists")
+async def get_existing_file_ids(request: Request, body: ExistsRequestBody):
+    """Which of ``file_ids`` hold chunks owned by exactly one namespace.
+
+    The owner is ``entity_id`` when given, otherwise the caller, so a client can
+    tell whether a file is already embedded for an agent without a similarity
+    search and without a copy under the caller's own id answering for it.
+    """
+    scope = resolve_owner_scope(request, body.entity_id)
+    try:
+        if isinstance(vector_store, AsyncPgVector):
+            found = await vector_store.get_filtered_ids(
+                body.file_ids,
+                owners=scope.owners,
+                executor=request.app.state.thread_pool,
+            )
+        else:
+            found = await run_in_executor(
+                request.app.state.thread_pool,
+                vector_store.get_filtered_ids,
+                body.file_ids,
+                scope.owners,
+            )
+
+        present = set(found)
+        return {
+            "file_ids": [id for id in dict.fromkeys(body.file_ids) if id in present]
+        }
+    except HTTPException as http_exc:
+        logger.error(
+            "HTTP Exception in get_existing_file_ids | Status: %d | Detail: %s",
+            http_exc.status_code,
+            http_exc.detail,
+        )
+        raise http_exc
+    except Exception as e:
+        logger.error(
+            "Failed to check file ids | Error: %s | Traceback: %s",
             str(e),
             traceback.format_exc(),
         )

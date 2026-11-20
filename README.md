@@ -78,6 +78,15 @@ nothing, and answers 404 with the chunks left in place. Because a 404 is
 indistinguishable from "already deleted", a caller that treats it as success will
 orphan those chunks silently.
 
+**Presence checks name one owner.** `POST /exists` takes `file_ids` and an
+optional `entity_id`, and answers `{"file_ids": [...]}` with the ids that hold
+chunks owned by exactly that entity, or by the caller when no entity is named.
+The retrieval routes read the caller and the entity together, so a copy the
+caller embedded under their own id would answer for the entity there; this
+route lets a client tell whether a file is already embedded for an agent before
+embedding it again. It only narrows what the same request could read through
+`/query`, and an older build answers 404, which a client can treat as "unknown".
+
 **Upgrade the client first.** Deploy order matters, in one direction only:
 
 - A client that sends `entity_id` against an *older* build is inert — the

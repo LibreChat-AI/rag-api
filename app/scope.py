@@ -79,5 +79,23 @@ def resolve_scope(request: Request, entity_id: Optional[str] = None) -> ScopeFil
     return ScopeFilter(owners=tuple(sorted(owners)))
 
 
+def resolve_owner_scope(
+    request: Request, entity_id: Optional[str] = None
+) -> ScopeFilter:
+    """Resolve the single owner a presence check asks about.
+
+    :func:`resolve_scope` reads the union of the caller and the named entity,
+    which is right for retrieval but cannot say *whose* chunks a file has: a copy
+    the caller embedded under their own id answers for the entity too. A presence
+    check needs one namespace, so a named entity replaces the caller here rather
+    than widening the set. That only ever narrows what ``resolve_scope`` would
+    read for the same request, so it reaches nothing the caller could not already
+    query.
+    """
+    if entity_id:
+        return ScopeFilter(owners=(entity_id,))
+    return resolve_scope(request)
+
+
 def scope_owners(scope: ScopeFilter) -> List[str]:
     return list(scope.owners)

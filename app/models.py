@@ -43,3 +43,8 @@ class QueryMultipleBody(BaseModel):
     file_ids: List[str]
     k: int = 4
     entity_id: Optional[str] = None
+
+
+class ExistsRequestBody(BaseModel):
+    file_ids: List[str]
+    entity_id: Optional[str] = None

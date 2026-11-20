@@ -3,3 +3,6 @@ __pycache__
 uploads/
 myenv/
 venv/
+.git
+.worktrees
+node_modules

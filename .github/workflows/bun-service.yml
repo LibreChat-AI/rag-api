@@ -1,0 +1,32 @@
+name: Bun service
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  extraction:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Formatting
+        run: bun run format:check
+      - name: Native extraction and service contract tests
+        run: bun test
+      - name: Build standalone image
+        run: docker build -f service/Dockerfile -t rag-bun-test .
+        working-directory: .
+      - name: Verify image starts without Python, database or provider credentials
+        run: bash service/test/image.sh rag-bun-test
+        working-directory: .

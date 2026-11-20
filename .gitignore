@@ -9,3 +9,5 @@ venv/
 *.pyc
 dev.yml
 SHOPIFY.md
+
+node_modules/
